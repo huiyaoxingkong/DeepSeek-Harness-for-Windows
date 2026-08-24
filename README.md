@@ -6,9 +6,29 @@
 - **exe 启动器**（`DeepSeek Harness.exe`）：WebView2 窗口 + 本地 Web UI（工作台 / 插件 / 设置 / 核心更新 / 日志）
 - **新手引导**：首次启动分步引导（工作台 / API Key / 插件与更新）
 - **核心可更新**：一键从 GitHub 官方源码（master 分支）下载 → `pnpm install` → `pnpm build` → 原子切换，失败自动回退
+- **核心可本地导入**：选择本地源码压缩包（.zip）构建并切换核心，无需网络 / 代理
 - **插件管理**：安装 / 卸载 / 启用 / 停用插件（npm 包、git 仓库、本地路径）
+- **插件可本地导入**：选择本地插件包（.tgz / .tar.gz / .zip）直接安装，无需代理
+- **插件商店**：内置 dsh-market 插件商店（初始关闭，可一键启用），支持添加 / 移除自定义商店源
 - **独立可换肤 UI**：外壳界面是纯 HTML/CSS/JS，直接编辑文件即可自定义
 - **内置 Node.js 运行时**：无需在系统安装 Node.js
+- **应用更新检测**：「关于」页可检查应用自身是否有新版本（GitHub Releases，结果缓存 30 分钟）
+
+## 版本 1.0.1
+
+新增功能：
+
+- **核心本地导入**：「核心更新」页 →「从本地文件导入核心」，选择 deepseek-harness
+  源码压缩包（GitHub archive 或自行备份均可），应用用内置工具链完成安装与构建并
+  原子切换，失败自动回退。全程本地执行，适用于无代理 / 受限网络环境。
+- **插件本地导入**：「插件」页 →「导入插件（本地文件）」，支持 npm 打包的
+  `.tgz / .tar.gz` 或插件源码 `.zip`，从本地文件安装、自动启用，无需代理。
+- **插件商店**：「插件」页新增「插件商店」。外壳商店为内置插件目录（与 dsh-market 同一
+  数据源，浏览 / 搜索 / 一键安装 / 更新 / 卸载，始终可用）；商店源是提供 dsh Web 内
+  插件市场的插件包（参考 [dsh-market/dsh-market](https://github.com/dsh-market/dsh-market)），
+  内置 `dshmarket` 随应用预装（离线，首次启动后台安装但不开启），商店卡片点「启用」后
+  重启服务器即可在 dsh Web「设置 → 插件市场」使用；UI 与来源标注参考 dsh-market 客户端，
+  商店源模型字段化（含 catalog 目录地址），为多商店兼容打基础。
 
 ## 版本 1.0.0 发行包
 
@@ -25,12 +45,15 @@
 deepseek_harness/
 ├── build.ps1                 # 一键构建脚本
 ├── app/                      # Python 启动器源码（exe 本体）
-│   ├── main.py               # 入口（pywebview 窗口）
+│   ├── main.py               # 入口（pywebview 窗口 + 桥方法）
 │   ├── core_api.py           # dsh 服务器子进程管理 + 孤儿进程清理
-│   ├── updater.py            # GitHub 源码下载 / 构建 / 原子切换
+│   ├── updater.py            # GitHub 源码下载 / 构建 / 原子切换 + 本地 ZIP 导入
+│   ├── plugins.py            # 插件安装 / 卸载 / 启停 + 本地文件导入
+│   ├── store.py              # 插件商店源管理（内置 dshmarket 预置源）
 │   ├── settings.py           # config.json 读写
 │   ├── ui_server.py          # 外壳 UI 的本地 HTTP 服务（127.0.0.1 随机端口）
 │   ├── relink.py             # NTFS junction 重链接（pnpm 链接迁移）
+│   ├── store/                # ★ 随应用预装的商店插件包（由 dsh-market-main.zip 构建）
 │   └── ui/                   # ★ 外壳 UI（可编辑）
 │       ├── index.html
 │       ├── style.css         # 主题由文件顶部 CSS 变量控制
@@ -38,6 +61,7 @@ deepseek_harness/
 ├── scripts/
 │   ├── install-node.ps1      # 下载便携版 Node.js 到 runtime/
 │   ├── build-core.ps1        # 构建核心（git init + pnpm install + pnpm build）
+│   ├── build-store.ps1       # 从 dsh-market-main.zip 构建商店插件包（离线打包）
 │   ├── write-core-info.py    # 记录上游 commit 信息
 │   └── relink.py             # 构建期 junction 重链接
 ├── core/                     # deepseek-harness 源码（构建产物，可由应用更新）
@@ -57,19 +81,60 @@ deepseek_harness/
 
 1. 在「设置」页填写 DeepSeek API Key（可选项 Base URL、端口）。
 2. 工作台点「启动服务器」，dsh Web 界面（默认 http://127.0.0.1:3080）自动全窗口显示在应用内。
-3. 「插件」页可安装/卸载/启用/停用插件（dsh 插件化架构：插件为 profile 依赖，声明 `dsh.bundle` 的加入层栈）。
-4. 「核心更新」页可检查 GitHub 上的最新源码并一键更新核心（更新前请先停止服务器）。
+3. 「插件」页可安装/卸载/启用/停用插件，可导入本地插件包（.tgz/.zip），
+   并管理插件商店源（内置 dshmarket 商店初始关闭，启用后重启服务器生效）。
+4. 「核心更新」页可检查 GitHub 上的最新源码并一键更新核心，也可从本地源码
+   压缩包导入核心（无需网络）（更新前请先停止服务器）。
 
 ## 插件管理
 
 「插件」页面提供 dsh profile（`~/.dsh/profiles/web`）的插件管理：
 
 - **安装**：支持 npm 包名（`pnpm add`）、git 仓库、本地路径；操作实时输出，安装前自动停止服务器
+- **导入**：支持本地文件 `.tgz / .tar.gz / .zip`（.zip 自动解压后安装），无需网络代理；安装完成自动启用
 - **卸载**：从 profile 依赖移除
 - **启用/停用**：加入/移出 `dsh.profile.bundles` 层栈（包保留在 node_modules，重启后生效）
 - **列表**：区分 内置层（dsh-base 等，不可卸载）/ 已启用 / 已停用 / 普通依赖
 
 插件操作走 dsh 官方机制（`dsh plugin --profile web <add|remove>`），由 dsh 自动调和 bundle 层。
+
+## 插件商店
+
+「插件」页的「插件商店」卡片分两块：
+
+### 外壳插件商店（插件目录，始终启用）
+
+外壳内置的插件商店，**始终可用**，与 dsh-market 使用同一数据源
+（awesome-dsh-plugin 目录，每日更新，2000+ 插件，双语描述），**支持多商店源目录**：
+
+- **多源目录**：每个带 `catalog` 地址的商店源都会并入外壳商店；顶部源标签切换
+  「全部 / 单个源」，合并视图下每张卡片标注来源（`来源` 徽章）
+- **浏览 / 搜索**：分类筛选 + 关键词搜索（名称 / 作者 / 描述），卡片显示名称、
+  作者、Star、下载量、中文描述与仓库链接
+- **安装**：一键安装（优先 npm 包，GitHub-only 插件走仓库地址）；已安装插件显示
+  状态（已启用 / 已停用）与已装版本
+- **更新 / 卸载**：已安装插件可一键更新（`pnpm update`）或卸载
+- **添加源**：填写名称 + 安装来源（可选）+ 目录地址 plugins.json（可选，至少一项），
+  仅目录源（无安装来源）也可添加——为未来更多商店类型预留
+
+### 商店源（核心商店插件）
+
+商店源是提供 dsh Web 内插件市场的插件包，UI 风格与来源标注参考了
+dsh-market 客户端的卡片 / 状态徽章 / 版本号设计：
+
+- **内置商店**：随应用预装 `dshmarket` 商店插件包。包体由本地源码归档
+  `dsh-market-main.zip` 经 `scripts\build-store.ps1` 构建而成（构建期编译
+  `lib/` + `client/` 并把运行时依赖 js-yaml/argparse/undici 一并打进 tarball）。
+  首次启动应用时在后台**预装但不开启**（离线安装进 profile，并以
+  `cordis.patch.yml` 的 `disabled: true` 行停用——dsh 官方补丁层机制，与
+  dsh-market 自身的停用方式一致，不受后续插件操作的 bundle 调和影响）；
+  在商店卡片点「启用」即时生效，重启服务器后在 dsh Web「设置 → 插件市场」使用
+- **来源标注**：每个商店源展示名称、内置徽章、状态（已启用/已停用/未安装）、
+  已装版本号，以及来源主页链接（`homepage` 字段）；多商店源可并存，卡片按源区分
+- **添加 / 移除商店源**：支持 npm 包名、git 仓库、本地路径；内置源不可移除（可停用）
+- **兼容基础**：商店源模型（`store_sources`）字段化——`name`（安装包名）、
+  `label`、`spec`、`homepage`、`catalog`（目录地址）、`builtin`；支持多源目录
+  合并与「仅目录」源，后续新增商店类型只需扩展该模型
 
 配置文件 `config.json` 字段：
 
@@ -81,7 +146,18 @@ deepseek_harness/
   "auto_start": false,    // 启动应用时自动启动服务器
   "open_browser": false,  // 启动服务器时同时打开系统浏览器
   "core_dir": "core",
-  "runtime_dir": "runtime"
+  "runtime_dir": "runtime",
+  "app_version": "1.0.1",
+  "store_sources": [      // 插件商店源列表（多源兼容模型）
+    {
+      "name": "dshmarket",                  // 安装包名
+      "label": "dshmarket 插件商店",        // 显示名称
+      "spec": "store/dshmarket-1.21.4.tgz", // 相对应用目录的本地包路径
+      "homepage": "https://github.com/dsh-market/dsh-market",  // 来源标注
+      "catalog": "https://awesome-dsh-plugin.com/plugins.json", // 外壳商店目录地址
+      "builtin": true
+    }
+  ]
 }
 ```
 
@@ -95,7 +171,10 @@ deepseek_harness/
   - pywebview 环境：`window.pywebview.api.<方法>(参数)`
   - 普通浏览器环境：`POST /api/bridge/<方法>`（JSON body）
 - 桥方法列表：`get_state`、`save_settings`、`start_server`、`stop_server`、
-  `restart_server`、`read_log`、`check_update`、`download_update`、`cancel_update`
+  `restart_server`、`read_log`、`check_update`、`download_update`、`cancel_update`、
+  `list_plugins`、`install_plugin`、`remove_plugin`、`set_plugin_enabled`、
+  `import_plugin`、`pick_plugin_file`、`store_list`、`store_add`、`store_remove`、
+  `store_set_enabled`、`import_core`、`pick_core_archive`、`check_app_update`
 
 ## 从源码构建
 
@@ -135,5 +214,5 @@ python -m PyInstaller --noconfirm --distpath dist\pyinstaller `
 ## 已知限制
 
 - 更新期间请勿关闭应用（会中断构建；下次启动自动清理残留临时目录）
-- 更新需要网络（GitHub + npm registry）
+- 在线更新需要网络（GitHub + npm registry）；本地导入核心/插件无需 GitHub，但依赖安装仍需 npm registry（有 pnpm 缓存时自动复用）
 - 首次构建核心约需 10 分钟（依赖安装 + 编译），后续更新利用 pnpm 缓存会快很多

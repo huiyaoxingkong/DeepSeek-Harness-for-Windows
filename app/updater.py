@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -26,6 +27,73 @@ BRANCH = "master"
 ZIP_URL = f"{UPSTREAM}/archive/refs/heads/{BRANCH}.zip"
 API_URL = "https://api.github.com/repos/deepseek-ai/deepseek-harness"
 USER_AGENT = "DeepSeek-Harness-Desktop/0.1"
+
+APP_UPSTREAM = "https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows"
+APP_API_RELEASES = "https://api.github.com/repos/huiyaoxingkong/DeepSeek-Harness-for-Windows/releases/latest"
+APP_RELEASES_URL = f"{APP_UPSTREAM}/releases/latest"
+
+# The desktop app itself checks the upstream GitHub release (cached so the
+# About page does not hit the API on every visit).
+_APP_CHECK_CACHE: dict = {"ts": 0.0, "result": None}
+_APP_CHECK_TTL = 30 * 60
+
+
+def check_app_release(current_version: str, cache_ttl: float = _APP_CHECK_TTL) -> dict:
+    """Check whether a newer desktop app release exists on GitHub."""
+    now = time.time()
+    cached = _APP_CHECK_CACHE.get("result")
+    if cached and now - _APP_CHECK_CACHE.get("ts", 0.0) < cache_ttl:
+        return {**cached, "cached": True}
+    try:
+        req = urllib.request.Request(
+            APP_API_RELEASES,
+            headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        tag = str(data.get("tag_name") or "").lstrip("v")
+        latest = {
+            "version": tag,
+            "name": str(data.get("name") or tag or "unknown"),
+            "url": str(data.get("html_url") or APP_RELEASES_URL),
+            "publishedAt": str(data.get("published_at") or "")[:10],
+        }
+        result = {
+            "ok": True,
+            "current": current_version,
+            "hasUpdate": bool(tag) and _version_newer(tag, current_version),
+            "latest": latest,
+        }
+        _APP_CHECK_CACHE.update(ts=now, result=result)
+        return {**result, "cached": False}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:  # no releases published yet
+            log.info("no app release found (HTTP 404)")
+            result = {"ok": True, "current": current_version,
+                      "hasUpdate": False, "latest": None}
+            _APP_CHECK_CACHE.update(ts=now, result=result)
+            return {**result, "cached": False}
+        return {"ok": False, "message": f"HTTP {exc.code}", "cached": False}
+    except Exception as exc:  # network or API failure: never block the UI
+        log.warning("app release check failed: %s", exc)
+        return {"ok": False, "message": str(exc), "cached": False}
+
+
+def _version_newer(newer: str, older: str) -> bool:
+    """Compare dotted version strings; non-numeric segments compare as text."""
+    n_parts = _version_parts(newer)
+    o_parts = _version_parts(older)
+    for n, o in zip(n_parts, o_parts):
+        if n != o:
+            return n > o
+    return len(n_parts) > len(o_parts)
+
+
+def _version_parts(version: str) -> list:
+    parts = []
+    for chunk in str(version).split("."):
+        parts.append(int(chunk) if chunk.isdigit() else chunk)
+    return parts
 
 
 class CoreUpdater:
@@ -117,25 +185,61 @@ class CoreUpdater:
         worker.start()
         return {"ok": True, "message": "更新已开始，进度将实时显示。"}
 
+    def import_from_zip(self, zip_path: str) -> dict:
+        """Build a core from a local source zip (no network needed)."""
+        zip_path = (zip_path or "").strip().strip('"')
+        if not os.path.isfile(zip_path):
+            return {"ok": False, "message": "文件不存在，请重新选择核心源码压缩包。"}
+        if not zip_path.lower().endswith(".zip"):
+            return {"ok": False, "message": "仅支持 .zip 格式的核心源码压缩包。"}
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                if not self._zip_has_package_json(zf):
+                    return {"ok": False,
+                            "message": "压缩包中未找到 package.json，请确认是 deepseek-harness 源码压缩包。"}
+        except (OSError, zipfile.BadZipFile):
+            return {"ok": False, "message": "无法读取压缩包，文件可能已损坏。"}
+        with self._lock:
+            if self._state["phase"] not in ("idle", "done"):
+                return {"ok": False, "message": f"正在{self._state['message']}，请稍候。"}
+            self._state.update(phase="installing", progress=0.05,
+                               message="开始导入本地核心…", error=None,
+                               remote=None, canUpdate=False)
+        self._cancel.clear()
+        worker = threading.Thread(
+            target=self._run_update, args=(zip_path,), daemon=True)
+        worker.start()
+        return {"ok": True, "message": "核心导入已开始，进度将实时显示。"}
+
+    @staticmethod
+    def _zip_has_package_json(zf: zipfile.ZipFile) -> bool:
+        for name in zf.namelist():
+            parts = name.split("/")
+            if parts and parts[-1] == "package.json":
+                return True
+        return False
+
     # ------------------------------------------------------------- pipeline
 
-    def _run_update(self) -> None:
+    def _run_update(self, zip_path: str | None = None) -> None:
         try:
-            # The UI may trigger an update without a preceding check; make sure
-            # the remote commit info used for the swap metadata is present.
-            with self._lock:
-                remote = self._state.get("remote")
-            if not remote:
-                try:
-                    remote = self._fetch_remote_info()
-                    with self._lock:
-                        self._state["remote"] = remote
-                except Exception as exc:  # network failure: non-fatal for the update
-                    log.warning("remote info fetch failed: %s", exc)
-            self._set("downloading", "正在下载源码压缩包…")
-            zip_path = self._download()
-            if self._cancel.is_set():
-                return self._finish_cancelled()
+            if zip_path is None:
+                # The UI may trigger an update without a preceding check; make
+                # sure the remote commit info used for the swap metadata is
+                # present.
+                with self._lock:
+                    remote = self._state.get("remote")
+                if not remote:
+                    try:
+                        remote = self._fetch_remote_info()
+                        with self._lock:
+                            self._state["remote"] = remote
+                    except Exception as exc:  # network failure: non-fatal for the update
+                        log.warning("remote info fetch failed: %s", exc)
+                self._set("downloading", "正在下载源码压缩包…")
+                zip_path = self._download()
+                if self._cancel.is_set():
+                    return self._finish_cancelled()
             with self._lock:
                 self._state["phase"] = "installing"
                 self._state["progress"] = 0.25
@@ -238,7 +342,13 @@ class CoreUpdater:
         with zipfile.ZipFile(zip_path) as zf:
             top = zf.namelist()[0].split("/", 1)[0]
             zf.extractall(out)
-        return os.path.join(out, top)
+        src_dir = os.path.join(out, top)
+        if not os.path.isfile(os.path.join(src_dir, "package.json")):
+            # A backup may zip the core directory itself (package.json at the
+            # archive root) rather than the GitHub layout with one top dir.
+            if os.path.isfile(os.path.join(out, "package.json")):
+                src_dir = out
+        return src_dir
 
     def _run_install(self, src_dir: str) -> None:
         # Registry flakiness (e.g. UND_ERR_DESTROYED on optional packages)
@@ -337,9 +447,10 @@ class CoreUpdater:
         self._git_init(core_dir)
         remote = self._state.get("remote") or {}
         info = {
-            "commit": remote.get("commit", ""),
-            "date": remote.get("date", ""),
-            "message": remote.get("message", ""),
+            "commit": remote.get("commit") or "local-import",
+            "date": remote.get("date") or "",
+            "message": remote.get("message") or "从本地文件导入核心",
+            "source": "github" if remote.get("commit") else "local",
             "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         with open(os.path.join(core_dir, ".dsh-desktop-info.json"), "w",

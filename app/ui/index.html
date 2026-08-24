@@ -87,6 +87,66 @@
         <div id="plugin-banner" class="banner hidden"></div>
 
         <div class="card">
+          <h2>插件商店 <button id="btn-refresh-store" class="btn small ghost" type="button" style="float:right;">刷新</button></h2>
+
+          <div class="store-shell">
+            <div class="store-name">外壳插件商店（插件目录）<span class="store-pill on">始终启用</span></div>
+            <div class="store-desc">本目录为外壳内置功能：浏览、搜索社区插件并一键安装 / 更新 / 卸载。
+              数据源与 dsh-market 一致（awesome-dsh-plugin 目录，每日更新）；
+              可添加更多带目录地址的商店源，多源目录合并展示并标注来源。</div>
+          </div>
+
+          <div id="store-srcs" class="store-cats"></div>
+          <div class="store-toolbar">
+            <input id="store-search" type="text" placeholder="搜索插件名称 / 作者 / 描述…" spellcheck="false">
+          </div>
+          <div id="store-cats" class="store-cats"></div>
+          <div id="store-catalog" class="store-catalog">
+            <div class="plugin-empty">目录加载中…</div>
+          </div>
+          <div class="store-more-wrap">
+            <button id="btn-store-more" class="btn ghost" hidden>加载更多</button>
+          </div>
+
+          <div class="store-section-title" style="margin-top:18px;">商店源（核心商店插件）</div>
+          <div id="store-preseed-banner" class="banner hidden"></div>
+          <div id="store-list" class="store-list">
+            <div class="plugin-empty">加载中…</div>
+          </div>
+          <div class="hint" style="margin-top:10px;">
+            商店源是提供 dsh Web 内插件市场的插件包（如 <code>dshmarket</code>，即
+            <a href="https://github.com/dsh-market/dsh-market" target="_blank">dsh-market</a>
+            插件商店），随应用预装、初始关闭；点「启用」后重启服务器，在 dsh Web 界面
+            「设置 → 插件市场」使用。也可添加自己的商店源：填入安装来源
+            （npm 包 / git 仓库 / 本地路径）即可启用；填入目录地址（plugins.json）
+            后该源目录会并入上方外壳商店（多源合并、来源标注，为兼容更多商店做准备）。
+          </div>
+          <div class="field" style="margin-top:14px;">
+            <div class="key-row" style="max-width:none;">
+              <input id="store-name" type="text" placeholder="商店名称（如 my-market）" spellcheck="false" style="flex:1 1 150px;">
+              <input id="store-spec" type="text" placeholder="安装来源：npm 包 / git 仓库 / 本地路径（可选）" spellcheck="false" style="flex:2 1 260px;">
+              <button id="btn-add-store" class="btn primary" style="flex:0 0 auto;">添加商店源</button>
+            </div>
+            <div class="key-row" style="max-width:none;margin-top:8px;">
+              <input id="store-catalog" type="text" placeholder="插件目录地址 plugins.json（可选，填入后该源目录并入上方商店）" spellcheck="false">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>导入插件（本地文件）</h2>
+          <div class="field">
+            <div class="key-row" style="max-width:none;">
+              <button id="btn-pick-plugin" class="btn ghost" style="flex:0 0 auto;">选择插件包…</button>
+              <span id="plugin-file-label" class="hint" style="align-self:center;">未选择文件</span>
+              <button id="btn-import-plugin" class="btn primary" style="flex:0 0 auto;" disabled>导入安装</button>
+            </div>
+            <div class="hint">支持 npm 打包的 <code>.tgz / .tar.gz</code> 或插件源码 <code>.zip</code>；
+              从本地文件安装，无需代理与网络。安装完成自动启用，重启服务器后生效。</div>
+          </div>
+        </div>
+
+        <div class="card">
           <h2>安装插件</h2>
           <div class="field">
             <div class="key-row">
@@ -206,6 +266,19 @@
             <div id="progress-message" class="progress-message"></div>
           </div>
         </div>
+
+        <div class="card">
+          <h2>从本地文件导入核心</h2>
+          <div class="field">
+            <div class="key-row" style="max-width:none;">
+              <button id="btn-pick-core" class="btn ghost" style="flex:0 0 auto;">选择源码压缩包…</button>
+              <span id="core-file-label" class="hint" style="align-self:center;">未选择文件</span>
+              <button id="btn-import-core" class="btn primary" style="flex:0 0 auto;" disabled>开始导入</button>
+            </div>
+            <div class="hint">选择 deepseek-harness 源码压缩包（<code>.zip</code>，GitHub 官方 archive 或自行备份的源码均可），
+              应用将使用内置工具链完成依赖安装与构建并原子切换核心，失败自动回退。全程本地执行，适用于无代理 / 受限网络环境。</div>
+          </div>
+        </div>
       </section>
 
       <!-- ===================== 日志 ===================== -->
@@ -229,6 +302,63 @@
           <div class="kv">
             <div class="kv-row"><span>应用版本</span><b id="about-app-version">-</b></div>
             <div class="kv-row"><span>端口</span><b id="about-port">-</b></div>
+            <div class="kv-row"><span>应用更新</span><b id="about-app-update">-</b></div>
+          </div>
+          <div class="key-row" style="max-width:none;margin-top:6px;">
+            <button id="btn-check-app-update" class="btn small ghost" type="button">检查应用更新</button>
+            <a id="app-update-link" class="btn small primary" hidden target="_blank">打开下载页面</a>
+          </div>
+          <div class="hint" style="margin-top:10px;">应用更新检查会查询 GitHub Releases（结果缓存 30 分钟）；核心更新请到「核心更新」页。</div>
+        </div>
+
+        <div class="card about">
+          <h2>代码来源</h2>
+          <p class="src-note">本项目为 <b>MIT License</b> 开源软件，项目主页
+            <a href="https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows" target="_blank">huiyaoxingkong/DeepSeek-Harness-for-Windows</a>；
+            核心功能均来自上游开源项目，基于以下代码构建：</p>
+          <div class="src-list">
+            <div class="src-item">
+              <div class="src-item-name">
+                <a href="https://github.com/deepseek-ai/deepseek-harness" target="_blank">deepseek-ai/deepseek-harness</a>
+                <span class="tag bundle">Apache-2.0</span>
+              </div>
+              <div class="src-item-desc">核心服务器与 Web 界面（dsh，本封装的核心，可本地导入/在线更新）</div>
+            </div>
+            <div class="src-item">
+              <div class="src-item-name">
+                <a href="https://github.com/dsh-market/dsh-market" target="_blank">dsh-market/dsh-market</a>
+                <span class="tag bundle">MIT</span>
+              </div>
+              <div class="src-item-desc">内置商店插件（dshmarket，由本地源码归档构建，初始关闭）</div>
+            </div>
+            <div class="src-item">
+              <div class="src-item-name">
+                <a href="https://github.com/r0x0r/pywebview" target="_blank">pywebview</a>
+                <span class="tag bundle">MIT</span>
+              </div>
+              <div class="src-item-desc">桌面窗口（WebView2 宿主）</div>
+            </div>
+            <div class="src-item">
+              <div class="src-item-name">
+                <a href="https://nodejs.org" target="_blank">Node.js</a>
+                <span class="tag bundle">MIT</span>
+              </div>
+              <div class="src-item-desc">内置运行时（便携版，随应用分发）</div>
+            </div>
+            <div class="src-item">
+              <div class="src-item-name">
+                <a href="https://github.com/pnpm/pnpm" target="_blank">pnpm</a>
+                <span class="tag bundle">MIT</span>
+              </div>
+              <div class="src-item-desc">依赖安装与核心构建（corepack 内置）</div>
+            </div>
+            <div class="src-item">
+              <div class="src-item-name">
+                <a href="https://github.com/pyinstaller/pyinstaller" target="_blank">PyInstaller</a>
+                <span class="tag bundle">GPL-2.0</span>
+              </div>
+              <div class="src-item-desc">启动器打包为 exe</div>
+            </div>
           </div>
         </div>
       </section>

@@ -22,6 +22,7 @@ import core_api
 import plugins
 import providers
 import settings
+import store
 import ui_server
 import updater
 
@@ -49,6 +50,7 @@ class Bridge:
         self._core = core_api.CoreController(APP_DIR, self._cfg)
         self._updater = updater.CoreUpdater(APP_DIR, self._cfg, self._core)
         self._plugins = plugins.PluginManager(APP_DIR, self._cfg, self._core)
+        self._store = store.StoreManager(APP_DIR, self._cfg, self._plugins)
 
     # ------------------------------------------------------------- state
 
@@ -148,11 +150,104 @@ class Bridge:
     def plugin_state(self) -> dict:
         return self._plugins.status()
 
+    # ------------------------------------------------------------- local import
+
+    def _pick_file(self, description: str, patterns: str) -> str:
+        try:
+            if not webview.windows:
+                return ""
+            selected = webview.windows[0].create_file_dialog(
+                webview.OPEN_DIALOG,
+                file_types=(f"{description} ({patterns})",),
+            )
+            if not selected:
+                return ""
+            return selected[0]
+        except Exception as exc:  # dialog unavailable (e.g. headless debug)
+            log.warning("file dialog failed: %s", exc)
+            return ""
+
+    def pick_core_archive(self) -> dict:
+        return {"path": self._pick_file("核心源码压缩包", "*.zip")}
+
+    def pick_plugin_file(self) -> dict:
+        return {"path": self._pick_file("插件包", "*.tgz;*.zip;*.tar.gz")}
+
+    def import_core(self, payload: dict) -> dict:
+        result = self._updater.import_from_zip((payload or {}).get("path", ""))
+        return {"ok": result["ok"], "message": result["message"]}
+
+    def import_plugin(self, payload: dict) -> dict:
+        ok, msg = self._plugins.import_from_file((payload or {}).get("path", ""))
+        return {"ok": ok, "message": msg}
+
+    # ------------------------------------------------------------- store
+
+    def store_list(self) -> dict:
+        return self._store.list()
+
+    def store_catalog(self, payload: dict = None) -> dict:
+        return self._store.catalog((payload or {}).get("source") or None)
+
+    def store_install(self, payload: dict) -> dict:
+        ok, msg = self._store.install_from_catalog((payload or {}).get("name", ""))
+        return {"ok": ok, "message": msg}
+
+    def store_uninstall(self, payload: dict) -> dict:
+        ok, msg = self._plugins.remove((payload or {}).get("name", ""))
+        return {"ok": ok, "message": msg}
+
+    def store_update(self, payload: dict) -> dict:
+        ok, msg = self._store.update_from_catalog((payload or {}).get("name", ""))
+        return {"ok": ok, "message": msg}
+
+    def store_add(self, payload: dict) -> dict:
+        ok, msg = self._store.add(
+            (payload or {}).get("name", ""),
+            (payload or {}).get("spec", ""),
+            (payload or {}).get("catalog", ""),
+            (payload or {}).get("homepage", ""))
+        return {"ok": ok, "message": msg}
+
+    def store_remove(self, payload: dict) -> dict:
+        ok, msg = self._store.remove((payload or {}).get("name", ""))
+        return {"ok": ok, "message": msg}
+
+    def store_set_enabled(self, payload: dict) -> dict:
+        name = (payload or {}).get("name", "")
+        enabled = bool((payload or {}).get("enabled", False))
+        ok, msg = self._store.set_enabled(name, enabled)
+        return {"ok": ok, "message": msg}
+
+    # ------------------------------------------------------------- store preseed
+
+    def _preseed_store(self) -> None:
+        """First-run background task: install the builtin store package into
+        the profile (offline, from the bundled tarball) but keep it disabled.
+        Runs once per launch; idempotent once installed."""
+        try:
+            if self._core.is_running():
+                log.info("preseed skipped: server running")
+                return
+            ok, msg = self._store.preseed()
+            log.info("store preseed: %s (%s)", msg, "ok" if ok else "failed")
+        except Exception as exc:  # never crash the launch thread
+            log.exception("store preseed crashed: %s", exc)
+
+    def _boot_with_preseed(self) -> None:
+        self._preseed_store()
+        self.start_server()
+
     # ------------------------------------------------------------- providers
 
     def list_providers(self) -> dict:
         return providers.list_providers(
             app_key_set=bool(self._cfg.get("api_key", "")))
+
+    # ------------------------------------------------------------- app update
+
+    def check_app_update(self) -> dict:
+        return updater.check_app_release(self._cfg.get("app_version", ""))
 
     # ------------------------------------------------------------- update
 
@@ -192,7 +287,10 @@ def main() -> None:
 
     def _after_start() -> None:
         if state["app"]["autoStart"]:
-            threading.Thread(target=bridge.start_server, daemon=True).start()
+            # Preseed first (instant once done), then start the server.
+            threading.Thread(target=bridge._boot_with_preseed, daemon=True).start()
+        else:
+            threading.Thread(target=bridge._preseed_store, daemon=True).start()
 
     try:
         webview.start(func=_after_start, debug=False, http_server=False)

@@ -11,15 +11,27 @@ function callApi(method, payload) {
   payload = payload || {};
   if (window.pywebview && window.pywebview.api && window.pywebview.api[method]) {
     const hasArgs = Object.keys(payload).length > 0;
-    return hasArgs
-      ? Promise.resolve(window.pywebview.api[method](payload))
-      : Promise.resolve(window.pywebview.api[method]());
+    return Promise.resolve(
+      hasArgs ? window.pywebview.api[method](payload) : window.pywebview.api[method]());
   }
   return fetch(`/api/bridge/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   }).then(r => r.json()).then(j => j.data);
+}
+
+/* pywebview 注入 js_api 是异步的；启动早期的调用要等桥就绪，否则
+   会落到 HTTP 回退路径。浏览器调试模式（无 pywebview）直接走 fetch。 */
+function waitBridgeReady(timeoutMs) {
+  if (!window.pywebview) return Promise.resolve();
+  const deadline = Date.now() + (timeoutMs || 8000);
+  return new Promise(resolve => {
+    (function poll() {
+      if (window.pywebview.api || Date.now() >= deadline) return resolve();
+      setTimeout(poll, 100);
+    })();
+  });
 }
 
 const $ = id => document.getElementById(id);
@@ -39,6 +51,7 @@ function showPage(name) {
   if (name === "update") renderLocalUpdate();   // 仅显示本地版本，不自动检查
   if (name === "plugins") refreshPlugins();
   if (name === "settings") loadSettings();      // 进入设置页时重新加载（含 API Key 掩码）
+  if (name === "about") checkAppUpdate(false);  // 进入关于页时静默检查（带缓存）
 }
 
 document.querySelectorAll(".nav-item").forEach(btn => {
@@ -278,8 +291,15 @@ function showBannerEl(el, type, text) {
 let pluginPollTimer = null;
 
 async function refreshPlugins() {
-  const data = await callApi("list_plugins");
+  const [data, storeData, catalog] = await Promise.all([
+    callApi("list_plugins"),
+    callApi("store_list"),
+    callApi("store_catalog"),
+  ]);
   renderPlugins(data);
+  renderStore(storeData);
+  storeState.data = catalog;
+  renderCatalog();
 }
 
 function esc(text) {
@@ -342,6 +362,259 @@ function renderPlugins(data) {
   });
 }
 
+/* ---------------- store catalog (shell store) ---------------- */
+
+const storeState = { data: null, query: "", cat: "", source: "", visible: 50 };
+
+function renderCatalog() {
+  const box = $("store-catalog");
+  const st = storeState;
+  const data = st.data;
+
+  const srcsBox = $("store-srcs");
+  const srcKey = data && data.ok ? JSON.stringify((data.sources || []).map(s => s.name)) : "";
+  if (srcKey && srcsBox.dataset.src !== srcKey) {
+    srcsBox.dataset.src = srcKey;
+    const chips = [["", "全部"]].concat((data.sources || []).map(s => [s.name, s.label]));
+    srcsBox.innerHTML = chips.map(([id, label]) =>
+      `<button class="cat ${st.source === id ? "on" : ""}" data-src="${esc(id)}">${esc(label)}</button>`).join("");
+    srcsBox.querySelectorAll("[data-src]").forEach(b => {
+      b.addEventListener("click", () => {
+        storeState.source = b.dataset.src;
+        storeState.visible = 50;
+        renderCatalog();
+      });
+    });
+  }
+
+  const catsBox = $("store-cats");
+  const catKey = data && data.ok ? (data.updated || "") : "";
+  if (catKey && catsBox.dataset.src !== catKey) {
+    catsBox.dataset.src = catKey;
+    const cats = data.categories || {};
+    const chips = [["", "全部"]].concat(Object.keys(cats).map(id => {
+      const c = cats[id] || {};
+      return [id, c.zh || c.en || id];
+    }));
+    catsBox.innerHTML = chips.map(([id, label]) =>
+      `<button class="cat ${st.cat === id ? "on" : ""}" data-cat="${esc(id)}">${esc(label)}</button>`).join("");
+    catsBox.querySelectorAll("[data-cat]").forEach(b => {
+      b.addEventListener("click", () => {
+        storeState.cat = b.dataset.cat;
+        storeState.visible = 50;
+        renderCatalog();
+      });
+    });
+  }
+
+  if (!data) {
+    box.innerHTML = '<div class="plugin-empty">目录加载中…</div>';
+    $("btn-store-more").hidden = true;
+    return;
+  }
+  if (!data.ok) {
+    box.innerHTML = `<div class="plugin-empty">${esc(data.message || "目录加载失败")}</div>`;
+    $("btn-store-more").hidden = true;
+    return;
+  }
+  const merged = !st.source;
+  const q = st.query.trim().toLowerCase();
+  const filtered = (data.plugins || []).filter(p => {
+    if (st.source && p.sourceName !== st.source) return false;
+    if (st.cat && p.category !== st.cat) return false;
+    if (!q) return true;
+    return (p.name + " " + p.owner + " " + p.description + " " + p.npm)
+      .toLowerCase().includes(q);
+  });
+  const shown = filtered.slice(0, st.visible);
+  if (!shown.length) {
+    box.innerHTML = '<div class="plugin-empty">没有匹配的插件。</div>';
+    $("btn-store-more").hidden = true;
+    return;
+  }
+  box.innerHTML = "";
+  for (const p of shown) {
+    const card = document.createElement("div");
+    card.className = "plugin-card";
+    const pill = p.installed
+      ? (p.enabled ? '<span class="store-pill on">已启用</span>'
+                   : '<span class="store-pill off">已停用</span>')
+      : '<span class="store-pill miss">未安装</span>';
+    const ver = p.version ? `<span class="store-ver">v${esc(p.version)}</span>` : "";
+    const srcTag = merged && p.sourceLabel
+      ? (p.sourceHomepage
+         ? `<a class="pc-src" href="${esc(p.sourceHomepage)}" target="_blank" title="来源 ${esc(p.sourceLabel)}">${esc(p.sourceLabel)}</a>`
+         : `<span class="pc-src">${esc(p.sourceLabel)}</span>`)
+      : "";
+    const actions = [];
+    if (p.installed) {
+      actions.push(`<button class="btn small" data-act="update" data-name="${esc(p.name)}">更新</button>`);
+      actions.push(`<button class="btn small danger" data-act="uninstall" data-name="${esc(p.name)}">卸载</button>`);
+    } else {
+      actions.push(`<button class="btn small primary" data-act="install" data-name="${esc(p.name)}">安装</button>`);
+    }
+    const byline = [esc(p.owner || "?")];
+    if (p.stars) byline.push(`⭐ ${p.stars}`);
+    if (p.downloads) byline.push(`下载 ${p.downloads}`);
+    if (p.added) byline.push(p.added);
+    card.innerHTML = `
+      <div class="pc-head">
+        <div class="pc-av">${esc((p.name || "?").charAt(0).toUpperCase())}</div>
+        <div class="pc-id">
+          <div class="pc-name">${esc(p.name)}
+            ${p.repo ? `<a class="pc-repo" href="${esc(p.repo)}" target="_blank" title="${esc(p.repo)}">↗</a>` : ""}
+            ${srcTag}${pill}${ver}</div>
+          <div class="pc-byline">${byline.join(" · ")}</div>
+        </div>
+        <div class="pc-actions">${actions.join("")}</div>
+      </div>
+      ${p.description ? `<div class="pc-desc">${esc(p.description)}</div>` : ""}`;
+    box.appendChild(card);
+  }
+  const errs = data.errors || [];
+  box.querySelector(".store-src-warn")?.remove();
+  if (errs.length) {
+    const warn = document.createElement("div");
+    warn.className = "banner err store-src-warn";
+    warn.style.marginBottom = "10px";
+    warn.textContent = "部分目录加载失败：" + errs.join("；");
+    box.prepend(warn);
+  }
+  $("btn-store-more").hidden = shown.length >= filtered.length;
+}
+
+$("store-search").addEventListener("input", e => {
+  storeState.query = e.target.value;
+  storeState.visible = 50;
+  renderCatalog();
+});
+
+$("btn-store-more").addEventListener("click", () => {
+  storeState.visible += 50;
+  renderCatalog();
+});
+
+$("store-catalog").addEventListener("click", e => {
+  const btn = e.target.closest("[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  const name = btn.dataset.name;
+  if (act === "uninstall" && !confirm(`确认卸载插件 ${name}？`)) return;
+  callApi({
+    install: "store_install",
+    update: "store_update",
+    uninstall: "store_uninstall",
+  }[act], { name: name }).then(res => {
+    showBannerEl($("plugin-banner"), res.ok ? "ok" : "err",
+      res.message || (res.ok ? "操作已开始" : "操作失败"));
+    if (res.ok) {
+      $("plugin-output-card").classList.remove("hidden");
+      startPluginPoll();
+    }
+  });
+});
+
+/* ---------------- store sources ---------------- */
+
+function renderStore(data) {
+  const list = $("store-list");
+  const snapshot = JSON.stringify(data || {});
+  if (list.dataset.snapshot === snapshot) return;  // 数据未变化，不重建 DOM
+  list.dataset.snapshot = snapshot;
+
+  const preseed = (data && data.preseed) || {};
+  const banner = $("store-preseed-banner");
+  if (preseed.phase === "running") {
+    banner.className = "banner info";
+    banner.textContent = preseed.message || "内置商店正在后台预装…";
+    banner.classList.remove("hidden");
+    startPluginPoll();  // 预装走插件操作通道，轮询其进度输出
+  } else if (preseed.phase === "failed") {
+    banner.className = "banner err";
+    banner.textContent = preseed.message || "内置商店预装失败。";
+    banner.classList.remove("hidden");
+  } else {
+    banner.classList.add("hidden");
+  }
+
+  const sources = (data && data.sources) || [];
+  if (!sources.length) {
+    list.innerHTML = '<div class="plugin-empty">暂无商店源，可在下方添加。</div>';
+    return;
+  }
+  list.innerHTML = "";
+  for (const s of sources) {
+    const row = document.createElement("div");
+    row.className = "store-row";
+    const pill = s.enabled
+      ? '<span class="store-pill on">已启用</span>'
+      : (s.installed ? '<span class="store-pill off">已停用</span>'
+                     : '<span class="store-pill miss">未安装</span>');
+    const builtinTag = s.builtin ? '<span class="tag builtin">内置</span>' : "";
+    const ver = s.version ? `<span class="store-ver">v${esc(s.version)}</span>` : "";
+    const bylineParts = [];
+    if (s.homepage) {
+      bylineParts.push(`<a class="store-src" href="${esc(s.homepage)}" target="_blank" title="来源主页">来源 ${esc(s.homepage)}</a>`);
+    } else if (s.spec) {
+      bylineParts.push(`<span>来源 ${esc(s.spec)}</span>`);
+    }
+    if (s.catalog) {
+      bylineParts.push(`<span>目录 ${esc(s.catalog)}</span>`);
+    }
+    bylineParts.push(`<span>插件包 ${esc(s.name)}</span>`);
+    const desc = s.builtin
+      ? "内置商店源：启用后重启服务器，在 dsh Web 界面「设置 → 插件市场」浏览与安装社区插件。"
+      : (s.spec ? `安装来源：${esc(s.spec)}` : "仅提供插件目录（已并入上方商店）。");
+    const actions = [];
+    if (s.enabled) {
+      actions.push(`<button class="btn small" data-act="disable" data-name="${esc(s.name)}">停用</button>`);
+    } else if (s.hasPackage) {
+      actions.push(`<button class="btn small primary" data-act="enable" data-name="${esc(s.name)}">启用</button>`);
+    }
+    if (!s.builtin) {
+      actions.push(`<button class="btn small danger" data-act="remove" data-name="${esc(s.name)}">移除</button>`);
+    }
+    row.innerHTML = `
+      <div class="store-av">${esc((s.label || s.name || "?").charAt(0).toUpperCase())}</div>
+      <div class="store-info">
+        <div class="store-name">${esc(s.label)}${builtinTag}${pill}${ver}</div>
+        <div class="store-byline">${bylineParts.join(" · ")}</div>
+        ${desc ? `<div class="store-desc">${desc}</div>` : ""}
+      </div>
+      <div class="store-actions">${actions.join("")}</div>`;
+    list.appendChild(row);
+  }
+  list.querySelectorAll("[data-act]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const act = btn.dataset.act;
+      const name = btn.dataset.name;
+      if (act === "remove" && !confirm(`确认移除商店源 ${name}？`)) return;
+      callApi({
+        remove: "store_remove",
+        enable: "store_set_enabled",
+        disable: "store_set_enabled",
+      }[act], {
+        name: name,
+        enabled: act === "enable",
+      }).then(res => {
+        showBannerEl($("plugin-banner"), res.ok ? "ok" : "err",
+          res.message || (res.ok ? "操作已开始" : "操作失败"));
+        if (res.ok && act === "enable") {
+          const src = sources.find(x => x.name === name);
+          if (src && !src.installed) {
+            $("plugin-output-card").classList.remove("hidden");
+            startPluginPoll();
+          } else {
+            refreshPlugins();
+          }
+        } else {
+          refreshPlugins();
+        }
+      });
+    });
+  });
+}
+
 function startPluginPoll() {
   if (pluginPollTimer) return;
   pluginPollTimer = setInterval(pollPluginState, 1500);
@@ -364,6 +637,8 @@ async function pollPluginState() {
   }
   $("btn-install-plugin").disabled = busy;
   $("btn-install-plugin").textContent = busy ? "进行中…" : "安装";
+  $("btn-import-plugin").disabled = busy;
+  $("btn-import-plugin").textContent = busy ? "进行中…" : "导入安装";
   if (!busy) {
     stopPluginPoll();
     if (st.message) {
@@ -383,6 +658,51 @@ $("btn-install-plugin").addEventListener("click", async () => {
 });
 
 $("btn-refresh-plugins").addEventListener("click", refreshPlugins);
+
+/* ---------------- plugin local import ---------------- */
+
+async function pickPluginFile() {
+  const res = await callApi("pick_plugin_file");
+  const path = (res && res.path) || "";
+  $("plugin-file-label").textContent = path ? path : "未选择文件";
+  $("plugin-file-label").dataset.path = path;
+  $("btn-import-plugin").disabled = !path || !!pluginPollTimer;
+}
+
+$("btn-pick-plugin").addEventListener("click", pickPluginFile);
+
+$("btn-import-plugin").addEventListener("click", async () => {
+  const path = $("plugin-file-label").dataset.path || "";
+  if (!path) return;
+  const res = await callApi("import_plugin", { path });
+  showBannerEl($("plugin-banner"), res.ok ? "ok" : "err", res.message);
+  if (res.ok) {
+    $("plugin-output-card").classList.remove("hidden");
+    startPluginPoll();
+  }
+});
+
+/* ---------------- store ---------------- */
+
+$("btn-refresh-store").addEventListener("click", refreshPlugins);
+
+$("btn-add-store").addEventListener("click", async () => {
+  const name = $("store-name").value.trim();
+  const spec = $("store-spec").value.trim();
+  const catalog = $("store-catalog").value.trim();
+  if (!name || (!spec && !catalog)) {
+    showBannerEl($("plugin-banner"), "err", "请填写商店名称，并至少填写安装来源或目录地址。");
+    return;
+  }
+  const res = await callApi("store_add", { name, spec, catalog });
+  showBannerEl($("plugin-banner"), res.ok ? "ok" : "err", res.message);
+  if (res.ok) {
+    $("store-name").value = "";
+    $("store-spec").value = "";
+    $("store-catalog").value = "";
+    refreshPlugins();
+  }
+});
 
 /* ---------------- update ---------------- */
 
@@ -432,6 +752,9 @@ function renderUpdate(res, silent) {
   }
   $("btn-check").disabled = busy;
   $("btn-update").disabled = busy || !data.canUpdate;
+  $("btn-import-core").disabled = busy || !($("core-file-label").dataset.path);
+  $("btn-import-core").textContent = busy ? "导入中…" : "开始导入";
+  $("btn-pick-core").disabled = busy;
 }
 
 async function pollUpdate() {
@@ -464,10 +787,69 @@ $("btn-update").addEventListener("click", async () => {
   updatePollTimer = setInterval(pollUpdate, 1500);
 });
 
+/* ---------------- core local import ---------------- */
+
+async function pickCoreArchive() {
+  const res = await callApi("pick_core_archive");
+  const path = (res && res.path) || "";
+  $("core-file-label").textContent = path ? path : "未选择文件";
+  $("core-file-label").dataset.path = path;
+  $("btn-import-core").disabled = !path;
+}
+
+$("btn-pick-core").addEventListener("click", pickCoreArchive);
+
+$("btn-import-core").addEventListener("click", async () => {
+  const path = $("core-file-label").dataset.path || "";
+  if (!path) return;
+  if (!confirm("将从本地源码压缩包构建并切换核心。\n构建期间请勿关闭应用。继续？")) return;
+  const res = await callApi("import_core", { path });
+  showBannerEl($("update-banner"), res.ok ? "ok" : "err", res.message);
+  if (res.ok) {
+    stopUpdatePoll();
+    updatePollTimer = setInterval(pollUpdate, 1500);
+  }
+});
+
+/* ---------------- app update (about) ---------------- */
+
+async function checkAppUpdate() {
+  const btn = $("btn-check-app-update");
+  const status = $("about-app-update");
+  const link = $("app-update-link");
+  if (btn.disabled) return;  // 已在进行中
+  btn.disabled = true;
+  btn.textContent = "检查中…";
+  const res = await callApi("check_app_update").catch(err => {
+    return { ok: false, message: String(err && err.message || err) };
+  });
+  btn.disabled = false;
+  btn.textContent = "检查应用更新";
+  link.hidden = true;
+  if (res.ok) {
+    const latest = res.latest || {};
+    if (res.hasUpdate) {
+      status.textContent = `发现新版本 v${latest.version}（当前 v${res.current}）`;
+      status.style.color = "";
+      if (latest.url) {
+        link.href = latest.url;
+        link.hidden = false;
+      }
+    } else {
+      status.textContent = `已是最新版本 v${res.current}`;
+      status.style.color = "";
+    }
+  } else {
+    status.textContent = res.message ? `检查失败：${res.message}` : "检查失败（网络不可用）";
+    status.style.color = "";
+  }
+}
+
+$("btn-check-app-update").addEventListener("click", checkAppUpdate);
+
 /* ---------------- logs ---------------- */
 
-function refreshLog() {
-  callApi("read_log").then(res => {
+function refreshLog() {  callApi("read_log").then(res => {
     $("log-view").textContent = res || "(空)";
     $("log-view").scrollTop = $("log-view").scrollHeight;
   }).catch(() => {
@@ -511,6 +893,7 @@ $("onb-next").addEventListener("click", () => {
 /* ---------------- boot ---------------- */
 
 (async function init() {
+  await waitBridgeReady();
   await loadSettings();
   const state = await refreshState();
   if (!state.app.onboardingDone) showOnboarding(true);

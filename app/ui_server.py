@@ -8,6 +8,7 @@ bridge proxy and iframes to the dsh web UI work without CORS hacks.
 from __future__ import annotations
 
 import http.server
+import inspect
 import json
 import logging
 import mimetypes
@@ -78,8 +79,13 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         try:
             # The whole JSON body is passed as one positional argument so the
             # HTTP bridge matches the pywebview js_api calling convention
-            # (method(payload_object)).
-            result = fn(payload)
+            # (method(payload_object)). Zero-argument methods (get_state etc.)
+            # are called without arguments, mirroring how pywebview invokes them.
+            params = list(inspect.signature(fn).parameters.values())
+            if params and params[0].default is inspect.Parameter.empty:
+                result = fn(payload)
+            else:
+                result = fn()
             if not isinstance(result, (dict, list, str, int, float, bool)) and result is not None:
                 result = {"value": result}
             return self._send_json({"ok": True, "data": result})

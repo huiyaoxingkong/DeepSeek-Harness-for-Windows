@@ -13,7 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 
 log = logging.getLogger("plugins")
@@ -94,9 +96,74 @@ class PluginManager:
         spec = spec.strip()
         if not spec:
             return False, "请输入插件包名或仓库地址"
+        if os.path.isfile(spec) and (" " in os.path.dirname(spec)
+                                     or " " in os.path.basename(spec)):
+            spec = self._stage(spec)
         return self._run(["add", spec], "installing")
 
+    def import_from_file(self, path: str) -> tuple[bool, str]:
+        """Install a plugin from a local file: npm tarball (.tgz / .tar.gz)
+        or a source zip (.zip). No network is needed to transfer the package;
+        pnpm resolves transitive dependencies from its store/registry."""
+        path = (path or "").strip().strip('"')
+        if not os.path.isfile(path):
+            return False, "文件不存在，请重新选择插件包。"
+        lowered = path.lower()
+        if lowered.endswith(".tgz") or lowered.endswith(".tar.gz"):
+            spec = self._stage(os.path.abspath(path))
+        elif lowered.endswith(".zip"):
+            spec = self._extract_zip(path)
+            if spec is None:
+                return False, "压缩包中未找到 package.json，请确认是插件源码或插件包。"
+        else:
+            return False, "仅支持 .tgz / .tar.gz / .zip 格式的插件包。"
+        return self._run(["add", spec], "installing")
+
+    def _cache_dir(self) -> str:
+        """Space-free cache for local plugin files. The dsh CLI forwards path
+        specs to pnpm through a cmd shim that splits unquoted space paths
+        (the app folder itself is "DeepSeek Harness"), so anything with a
+        space in its path must be staged here first."""
+        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        cache = os.path.join(base, "DeepSeek-Harness-Desktop", "plugin-cache")
+        os.makedirs(cache, exist_ok=True)
+        return cache
+
+    def _stage(self, path: str) -> str:
+        """Copy a local plugin file into the space-free cache dir."""
+        dst = os.path.join(self._cache_dir(), os.path.basename(path))
+        if os.path.abspath(path) != os.path.abspath(dst):
+            shutil.copy2(path, dst)
+        return dst
+
+    def _extract_zip(self, path: str) -> str | None:
+        """Unpack a plugin source zip into the space-free cache dir and
+        return the dir containing package.json (None when the zip is not a
+        plugin)."""
+        import zipfile
+        name = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(self._cache_dir(), name)
+        if os.path.isdir(out):
+            shutil.rmtree(out, ignore_errors=True)
+        try:
+            with zipfile.ZipFile(path) as zf:
+                zf.extractall(out)
+        except (OSError, zipfile.BadZipFile):
+            return None
+        if os.path.isfile(os.path.join(out, "package.json")):
+            return os.path.abspath(out)
+        entries = [d for d in os.listdir(out)
+                   if os.path.isdir(os.path.join(out, d))]
+        if len(entries) == 1:
+            inner = os.path.join(out, entries[0])
+            if os.path.isfile(os.path.join(inner, "package.json")):
+                return os.path.abspath(inner)
+        return None
+
     def remove(self, name: str) -> tuple[bool, str]:
+        name = (name or "").strip()
+        if not name:
+            return False, "请输入要卸载的插件名。"
         return self._run(["remove", name], "removing")
 
     def set_enabled(self, name: str, enabled: bool) -> tuple[bool, str]:

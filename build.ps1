@@ -21,6 +21,10 @@ if (-not $SkipCoreBuild) {
     if (-not $?) { throw "build-core failed" }
 }
 
+# 2b. build the bundled store plugin from the local source archive
+& (Join-Path $PSScriptRoot "scripts\build-store.ps1")
+if (-not $?) { throw "build-store failed" }
+
 # 3. PyInstaller
 if (-not $SkipPyInstaller) {
     Write-Host "=== Packaging launcher exe ===" -ForegroundColor Cyan
@@ -60,6 +64,10 @@ Write-Host "  - copying shell UI (user-editable web files)..."
 robocopy (Join-Path $root "app\ui") (Join-Path $dist "ui") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
 if ($LASTEXITCODE -gt 7) { throw "robocopy ui failed ($LASTEXITCODE)" }
 
+Write-Host "  - copying bundled store plugin packages..."
+robocopy (Join-Path $root "app\store") (Join-Path $dist "store") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+if ($LASTEXITCODE -gt 7) { throw "robocopy store failed ($LASTEXITCODE)" }
+
 $config = @{
     api_key       = ""
     base_url      = ""
@@ -68,8 +76,18 @@ $config = @{
     open_browser  = $false
     core_dir      = "core"
     runtime_dir   = "runtime"
-    app_version   = "1.0.0"
+    app_version   = "1.0.1"
     last_updated_core = ""
+    store_sources = @(
+        @{
+            name     = "dshmarket"
+            label    = "dshmarket 插件商店"
+            spec     = "store/dshmarket-1.21.4.tgz"
+            homepage = "https://github.com/dsh-market/dsh-market"
+            catalog  = "https://awesome-dsh-plugin.com/plugins.json"
+            builtin  = $true
+        }
+    )
 }
 if (-not (Test-Path (Join-Path $dist "config.json"))) {
     $config | ConvertTo-Json | Set-Content (Join-Path $dist "config.json") -Encoding UTF8

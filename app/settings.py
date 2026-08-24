@@ -18,9 +18,19 @@ class Settings:
         "open_browser": False,
         "core_dir": "core",
         "runtime_dir": "runtime",
-        "app_version": "1.0.0",
+        "app_version": "1.0.1",
         "last_updated_core": "",
         "onboarding_done": False,
+        "store_sources": [
+            {
+                "name": "dshmarket",
+                "label": "dshmarket 插件商店",
+                "spec": "store/dshmarket-1.21.4.tgz",
+                "homepage": "https://github.com/dsh-market/dsh-market",
+                "catalog": "https://awesome-dsh-plugin.com/plugins.json",
+                "builtin": True,
+            },
+        ],
     }
 
     def __init__(self, path: str) -> None:
