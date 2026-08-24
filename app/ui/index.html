@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeepSeek Harness Desktop</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!--
+    本文件是桌面应用的"外壳 UI"。它是纯 HTML/CSS/JS，
+    您可以直接编辑本目录下的 index.html / style.css / app.js 来更换皮肤与布局。
+    重新打开应用后即生效。相关接口（pywebview API）见 app.js 顶部说明。
+  -->
+  <div class="layout">
+
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">DSH</div>
+        <div class="brand-text">
+          <div class="brand-name">DeepSeek Harness</div>
+          <div class="brand-sub">Desktop</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-page="workspace">
+          <span class="nav-icon">▦</span>工作台
+        </button>
+        <button class="nav-item" data-page="plugins">
+          <span class="nav-icon">◇</span>插件
+        </button>
+        <button class="nav-item" data-page="settings">
+          <span class="nav-icon">⚙</span>设置
+        </button>
+        <button class="nav-item" data-page="update">
+          <span class="nav-icon">⇅</span>核心更新
+        </button>
+        <button class="nav-item" data-page="logs">
+          <span class="nav-icon">☰</span>日志
+        </button>
+        <button class="nav-item" data-page="about">
+          <span class="nav-icon">ⓘ</span>关于
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div id="sidebar-status" class="status-dot" title="服务器状态"></div>
+        <span id="sidebar-status-text">未启动</span>
+      </div>
+    </aside>
+
+    <main class="content">
+
+      <!-- ===================== 工作台 ===================== -->
+      <section class="page" id="page-workspace">
+        <div class="page-head">
+          <h1>工作台</h1>
+          <div class="head-actions">
+            <button id="btn-immersive" class="btn ghost" title="隐藏外壳，全窗口显示 Web 界面">全屏</button>
+            <button id="btn-open-browser" class="btn ghost" hidden>浏览器打开</button>
+            <button id="btn-restart" class="btn ghost" hidden>重启</button>
+            <button id="btn-stop" class="btn danger" hidden>停止服务器</button>
+            <button id="btn-start" class="btn primary">启动服务器</button>
+          </div>
+        </div>
+
+        <div id="server-banner" class="banner hidden"></div>
+
+        <div class="frame-wrap">
+          <button id="btn-exit-immersive" class="btn small float-exit" title="退出全屏（回到外壳界面）">⇤ 退出全屏</button>
+          <div class="frame-empty" id="frame-empty">
+            <div class="empty-title">服务器未启动</div>
+            <div class="empty-sub">点击右上角「启动服务器」开始使用 DeepSeek Harness Web 界面</div>
+          </div>
+          <iframe id="dsh-frame" class="frame hidden" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals"></iframe>
+        </div>
+      </section>
+
+      <!-- ===================== 插件 ===================== -->
+      <section class="page hidden" id="page-plugins">
+        <div class="page-head">
+          <h1>插件管理</h1>
+          <button id="btn-refresh-plugins" class="btn ghost">刷新</button>
+        </div>
+
+        <div id="plugin-banner" class="banner hidden"></div>
+
+        <div class="card">
+          <h2>安装插件</h2>
+          <div class="field">
+            <div class="key-row">
+              <input id="plugin-spec" type="text" placeholder="npm 包名 或 git 仓库地址（如 @scope/plugin-name）" spellcheck="false">
+              <button id="btn-install-plugin" class="btn primary" style="flex:0 0 auto;">安装</button>
+            </div>
+            <div class="hint">支持 npm 包、git 地址、本地路径；安装前会自动停止服务器，安装完成后需重启服务器生效。</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>已安装插件 <span id="plugin-count" class="dim-count"></span></h2>
+          <div id="plugin-list" class="plugin-list">
+            <div class="plugin-empty">暂无插件（列表加载中…）</div>
+          </div>
+        </div>
+
+        <div class="card" id="plugin-output-card" hidden>
+          <h2>操作输出</h2>
+          <pre id="plugin-output" class="log-view" style="height: 220px;"></pre>
+        </div>
+      </section>
+
+      <!-- ===================== 设置 ===================== -->
+      <section class="page hidden" id="page-settings">
+        <div class="page-head">
+          <h1>设置</h1>
+          <button id="btn-save-settings" class="btn primary">保存设置</button>
+        </div>
+
+        <div class="card">
+          <h2>模型 API</h2>
+          <div class="field">
+            <label for="api-key">DeepSeek API Key</label>
+            <div class="key-row">
+              <input id="api-key" type="password" placeholder="sk-..." autocomplete="off"
+                     spellcheck="false" readonly>
+              <button id="btn-toggle-key" class="btn small" type="button" disabled>显示</button>
+              <button id="btn-change-key" class="btn small" type="button">更换</button>
+            </div>
+            <div class="hint">已保存的密钥以掩码显示；点「显示」可查看完整密钥（不可复制）；点「更换」可输入或粘贴新密钥。
+              此密钥以环境变量（DEEPSEEK_API_KEY）方式注入 dsh 核心。</div>
+          </div>
+          <div class="field">
+            <label for="base-url">API Base URL（可选）</label>
+            <input id="base-url" type="text" placeholder="https://api.deepseek.com">
+            <div class="hint">留空使用默认地址；对应环境变量 DEEPSEEK_BASE_URL。多提供方场景建议使用下方「模型提供方」方式配置。</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>模型提供方 <button id="btn-refresh-providers" class="btn small ghost" type="button" style="float:right;">刷新</button></h2>
+          <div id="providers-list">
+            <div class="plugin-empty">加载中…</div>
+          </div>
+          <div class="hint" style="margin-top:10px;">
+            完整模型配置在 dsh Web 界面「设置 → 模型」中完成（支持 DeepSeek / Anthropic / OpenAI /
+            自定义网关，密钥只写存储于 ~/.dsh/.credentials.yaml，页面只显示脱敏描述符）。
+            配置后点击「刷新」或重启应用，此处列表即同步显示。
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>服务器</h2>
+          <div class="field">
+            <label for="port">端口</label>
+            <input id="port" type="number" min="1" max="65535" value="3080">
+            <div class="hint">dsh Web 界面监听端口，修改后需重启服务器。</div>
+          </div>
+          <label class="check">
+            <input id="auto-start" type="checkbox">
+            <span>启动应用时自动启动服务器</span>
+          </label>
+          <label class="check">
+            <input id="open-browser" type="checkbox">
+            <span>启动服务器后同时打开系统浏览器</span>
+          </label>
+        </div>
+        <div class="save-toast" id="save-toast">已保存</div>
+      </section>
+
+      <!-- ===================== 核心更新 ===================== -->
+      <section class="page hidden" id="page-update">
+        <div class="page-head">
+          <h1>核心更新</h1>
+          <div class="head-actions">
+            <button id="btn-check" class="btn ghost">检查更新</button>
+            <button id="btn-update" class="btn primary" disabled>更新核心</button>
+          </div>
+        </div>
+
+        <div id="update-banner" class="banner hidden"></div>
+
+        <div class="card">
+          <h2>版本信息</h2>
+          <div class="kv">
+            <div class="kv-row"><span>当前核心版本</span><b id="local-version">-</b></div>
+            <div class="kv-row"><span>当前提交</span><b id="local-commit">-</b></div>
+            <div class="kv-row"><span>更新日期</span><b id="local-date">-</b></div>
+          </div>
+          <div class="kv">
+            <div class="kv-row"><span>远程最新提交</span><b id="remote-commit">-</b></div>
+            <div class="kv-row"><span>提交时间</span><b id="remote-date">-</b></div>
+            <div class="kv-row"><span>提交说明</span><b id="remote-message" class="ellipsis">-</b></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>更新流程</h2>
+          <ol class="steps">
+            <li>从 GitHub 下载 <code>deepseek-ai/deepseek-harness</code> 官方 main 分支源码</li>
+            <li>使用内置 Node.js 工具链执行 <code>pnpm install</code> 与 <code>pnpm build</code></li>
+            <li>原子切换到新核心，失败时自动回退到旧版本</li>
+          </ol>
+          <div id="update-progress" class="progress hidden">
+            <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+            <div id="progress-message" class="progress-message"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== 日志 ===================== -->
+      <section class="page hidden" id="page-logs">
+        <div class="page-head">
+          <h1>核心日志</h1>
+          <button id="btn-refresh-log" class="btn ghost">刷新</button>
+        </div>
+        <pre id="log-view" class="log-view">加载中…</pre>
+      </section>
+
+      <!-- ===================== 关于 ===================== -->
+      <section class="page hidden" id="page-about">
+        <div class="page-head"><h1>关于</h1></div>
+        <div class="card about">
+          <div class="about-logo">DSH</div>
+          <h2>DeepSeek Harness Desktop</h2>
+          <p>基于 <a href="https://github.com/deepseek-ai/deepseek-harness" target="_blank">deepseek-ai/deepseek-harness</a> 源码构建的 Windows 桌面封装。</p>
+          <p>核心可随时从 GitHub 官方源码更新；外壳 UI 为纯网页文件，可直接编辑
+          <code>ui/index.html</code>、<code>ui/style.css</code>、<code>ui/app.js</code> 自定义界面。</p>
+          <div class="kv">
+            <div class="kv-row"><span>应用版本</span><b id="about-app-version">-</b></div>
+            <div class="kv-row"><span>端口</span><b id="about-port">-</b></div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ===================== 新手引导 ===================== -->
+  <div id="onboarding" class="onboarding hidden">
+    <div class="onb-card">
+      <div class="onb-step active" data-step="0">
+        <div class="onb-icon brand-mark" style="width:56px;height:56px;font-size:16px;">DSH</div>
+        <h2>欢迎使用 DeepSeek Harness</h2>
+        <p>本地化运行的 AI Agent 工作台。核心为 deepseek-ai/deepseek-harness 官方开源项目，
+           可随时从 GitHub 更新；外壳界面为本地网页，可自行定制。</p>
+      </div>
+      <div class="onb-step" data-step="1">
+        <div class="onb-icon">▦</div>
+        <h2>工作台</h2>
+        <p>点击右上角「启动服务器」，dsh Web 界面将自动全窗口显示在应用内，可随时停止或重启服务器。</p>
+      </div>
+      <div class="onb-step" data-step="2">
+        <div class="onb-icon">⚙</div>
+        <h2>配置 API Key</h2>
+        <p>在「设置」页填入 DeepSeek API Key。密钥以掩码显示、不可复制，点「更换」可随时输入新密钥。
+           更多模型提供方（Anthropic / OpenAI / 自定义网关）可在 Web 界面「设置 → 模型」中配置。</p>
+      </div>
+      <div class="onb-step" data-step="3">
+        <div class="onb-icon">◇</div>
+        <h2>插件与核心更新</h2>
+        <p>「插件」页可安装、卸载、启用、停用插件；「核心更新」页可一键从 GitHub 官方源码更新核心，
+           更新流程自动完成依赖安装与构建。</p>
+      </div>
+      <div class="onb-dots" id="onb-dots"></div>
+      <div class="onb-actions">
+        <button id="onb-skip" class="btn ghost">跳过</button>
+        <button id="onb-prev" class="btn ghost" disabled>上一步</button>
+        <button id="onb-next" class="btn primary">下一步</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

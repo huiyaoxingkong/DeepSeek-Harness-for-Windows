@@ -1,0 +1,186 @@
+"""Plugin manager for the desktop launcher.
+
+dsh profiles live under `~/.dsh/profiles/<name>` (or $DSH_HOME). Plugins are
+dependencies of the profile package that declare a `dsh.bundle` patch; the CLI
+command `dsh plugin --profile web add/remove <spec>` forwards to pnpm inside
+the profile directory and reconciles the bundle layer list. This module wraps
+that command with live output capture and reads the profile manifest for the
+plugin list.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import subprocess
+import threading
+
+log = logging.getLogger("plugins")
+
+PROFILE = "web"
+
+
+class PluginManager:
+    """List / install / remove / enable-disable profile plugins."""
+
+    def __init__(self, app_dir: str, settings, core) -> None:
+        self._app_dir = app_dir
+        self._cfg = settings
+        self._core = core
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen | None = None
+        self._state: dict = {
+            "phase": "idle",       # idle|installing|removing|toggling
+            "message": "",
+            "output": [],
+            "error": None,
+        }
+
+    # ------------------------------------------------------------- paths
+
+    @property
+    def profile_dir(self) -> str:
+        home = os.environ.get("DSH_HOME") or os.path.join(
+            os.path.expanduser("~"), ".dsh")
+        return os.path.join(home, "profiles", PROFILE)
+
+    def _read_manifest(self) -> dict | None:
+        path = os.path.join(self.profile_dir, "package.json")
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
+
+    # ------------------------------------------------------------- list
+
+    def list(self) -> dict:
+        manifest = self._read_manifest() or {}
+        deps = manifest.get("dependencies") or {}
+        bundles = manifest.get("dsh", {}).get("profile", {}).get("bundles") or []
+        plugins: list[dict] = []
+        for name in bundles:
+            version = self._installed_version(name)
+            if name in deps:
+                plugins.append({"name": name, "version": version,
+                                "spec": deps[name], "enabled": True, "builtin": False})
+            else:
+                plugins.append({"name": name, "version": version,
+                                "spec": "", "enabled": True, "builtin": True})
+        for name, spec in deps.items():
+            if name in bundles:
+                continue
+            plugins.append({"name": name, "version": self._installed_version(name),
+                            "spec": spec, "enabled": False, "builtin": False})
+        plugins.sort(key=lambda p: (p["builtin"], p["name"]))
+        return {"plugins": plugins, "profileDir": self.profile_dir,
+                "running": self._core.is_running()}
+
+    def _installed_version(self, name: str) -> str:
+        try:
+            manifest = os.path.join(self.profile_dir, "node_modules", *name.split("/"),
+                                    "package.json")
+            with open(manifest, "r", encoding="utf-8") as fh:
+                return json.load(fh).get("version", "")
+        except (OSError, ValueError):
+            return ""
+
+    # ------------------------------------------------------------- actions
+
+    def install(self, spec: str) -> tuple[bool, str]:
+        spec = spec.strip()
+        if not spec:
+            return False, "请输入插件包名或仓库地址"
+        return self._run(["add", spec], "installing")
+
+    def remove(self, name: str) -> tuple[bool, str]:
+        return self._run(["remove", name], "removing")
+
+    def set_enabled(self, name: str, enabled: bool) -> tuple[bool, str]:
+        manifest = self._read_manifest()
+        if manifest is None:
+            return False, "profile 尚未初始化"
+        deps = manifest.get("dependencies") or {}
+        if name not in deps:
+            return False, "该插件不是已安装的依赖，无法停用"
+        bundles = list(manifest.get("dsh", {}).get("profile", {}).get("bundles") or [])
+        was = name in bundles
+        if enabled == was:
+            return True, "状态未变化"
+        if enabled:
+            bundles.append(name)
+        else:
+            bundles.remove(name)
+        manifest.setdefault("dsh", {})["profile"] = {"bundles": bundles}
+        try:
+            with open(os.path.join(self.profile_dir, "package.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(manifest, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            return False, f"写入 profile 清单失败: {exc}"
+        with self._lock:
+            self._state.update(phase="idle", message=(
+                f"已{'启用' if enabled else '停用'} {name}，重启服务器后生效。"),
+                output=[], error=None)
+        return True, "已修改，重启服务器后生效"
+
+    # ------------------------------------------------------------- runner
+
+    def _run(self, args: list[str], phase: str) -> tuple[bool, str]:
+        with self._lock:
+            if self._state["phase"] != "idle":
+                return False, "已有插件操作正在进行，请稍候"
+            self._state.update(phase=phase, message="", output=[], error=None)
+            if self._core.is_running():
+                self._core.stop()
+        node_dir = os.path.dirname(self._core.node_exe)
+        cmd = [self._core.node_exe, self._core.bin_js, "plugin",
+               "--profile", PROFILE, *args]
+        env = dict(os.environ)
+        env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+        log.info("plugin run: %s", " ".join(cmd))
+        worker = threading.Thread(
+            target=self._run_worker, args=(cmd, env, phase), daemon=True)
+        worker.start()
+        return True, "操作已开始，进度见下方输出"
+
+    def _run_worker(self, cmd: list[str], env: dict, phase: str) -> None:
+        try:
+            proc = subprocess.Popen(
+                cmd, cwd=self._app_dir, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            self._proc = proc
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.rstrip()
+                if not line:
+                    continue
+                with self._lock:
+                    self._state["output"].append(line)
+                    if len(self._state["output"]) > 200:
+                        self._state["output"].pop(0)
+                    self._state["message"] = line[:90]
+            proc.wait()
+            with self._lock:
+                if proc.returncode == 0:
+                    self._state.update(phase="idle", message="操作完成，重启服务器后生效。")
+                else:
+                    self._state.update(
+                        phase="idle", message=f"操作失败（退出码 {proc.returncode}）",
+                        error=f"exit code {proc.returncode}")
+        except OSError as exc:
+            with self._lock:
+                self._state.update(phase="idle", message=f"无法启动插件命令: {exc}",
+                                   error=str(exc))
+
+    # ------------------------------------------------------------- state
+
+    def status(self) -> dict:
+        with self._lock:
+            return {**self._state}
