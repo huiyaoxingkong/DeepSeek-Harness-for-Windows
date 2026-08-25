@@ -19,6 +19,7 @@ import time
 import webview
 
 import core_api
+import junctions
 import plugins
 import providers
 import settings
@@ -51,6 +52,35 @@ class Bridge:
         self._updater = updater.CoreUpdater(APP_DIR, self._cfg, self._core)
         self._plugins = plugins.PluginManager(APP_DIR, self._cfg, self._core)
         self._store = store.StoreManager(APP_DIR, self._cfg, self._plugins)
+        # Core workspace junctions may be missing right after a generic
+        # archive extraction; restore them before the server can start.
+        self._junctions_ok = threading.Event()
+        threading.Thread(target=self._ensure_junctions, daemon=True).start()
+
+    def _scripts_dir(self) -> str:
+        bundled = os.path.join(APP_DIR, "scripts", "restore-junctions.ps1")
+        if os.path.isfile(bundled):
+            return bundled
+        # dev layout: the repo's scripts/ sits next to app/
+        return os.path.join(os.path.dirname(APP_DIR), "scripts",
+                            "restore-junctions.ps1")
+
+    def _ensure_junctions(self) -> None:
+        try:
+            core_dir = self._core.core_dir
+            if junctions.needs_restore(core_dir):
+                ok = junctions.restore(core_dir, self._scripts_dir())
+                log.info("core junction restore: %s",
+                         "ok" if ok else "failed")
+            else:
+                log.info("core junctions: ok")
+        except Exception as exc:  # never block startup
+            log.warning("junction check failed: %s", exc)
+        finally:
+            self._junctions_ok.set()
+
+    def _wait_junctions(self, timeout: float = 600.0) -> bool:
+        return self._junctions_ok.wait(timeout=timeout)
 
     # ------------------------------------------------------------- state
 
@@ -109,6 +139,8 @@ class Bridge:
     # ------------------------------------------------------------- server
 
     def start_server(self) -> dict:
+        if not self._wait_junctions():
+            return {"ok": False, "message": "核心组件链接恢复超时，请重启应用重试。"}
         ok, msg = self._core.start()
         return {"ok": ok, "message": msg, "port": self._cfg.get("port", 3080)}
 

@@ -84,14 +84,15 @@ DeepSeek Harness for Windows 是基于 [deepseek-ai/deepseek-harness](https://gi
 | 桥接 API | 新增 `pick_core_archive` / `import_core` / `pick_plugin_file` / `import_plugin` / `store_*` / `check_app_update` 方法 |
 | 配置 | 新增 `store_sources` 字段（内置 dshmarket 预置源）；`app_version` 更新为 1.0.1 |
 | Bug 修复 | 版本启动早期不显示；安装目录含空格时本地安装失败；商店操作缺参数校验 |
+| 安装包修复 | 修复解压安装后核心缺失工作区链接导致服务器无法启动（`ERR_MODULE_NOT_FOUND`）的问题：随包附带 `core\junctions.json` 链接清单，安装脚本与应用启动自愈两种机制均用 `mklink /J` 重建（无需管理员权限） |
 
 ## 三、安装包
 
 | 项目 | 说明 |
 | --- | --- |
-| 安装包 | `DeepSeekHarness-1.0.1-Setup.exe`（约 288 MB，7-Zip 自解压） |
+| 安装包 | `DeepSeekHarness-1.0.1-Setup.exe`（约 517 MB，7-Zip 自解压） |
 | 安装方式 | 双击运行，选择安装目录（默认 `C:\DeepSeek Harness`），自动创建桌面快捷方式 |
-| SHA256 | `5915AB87F9605DE1398B054B99CACABD67848CB6A9887449590715706F28E99D` |
+| SHA256 | `650765D38813A6A649A198DFD0BAEFBDC90EC361089AE9E5010775EC48E0C650` |
 | 环境要求 | Windows 10/11（内置 Microsoft Edge WebView2） |
 
 > 安装包未包含在本源码仓库中（GitHub 单文件 100 MB 限制），请在 Releases 页面下载：

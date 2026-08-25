@@ -54,6 +54,10 @@ if (-not $SkipCoreBuild) {
     if ($LASTEXITCODE -gt 7) { throw "robocopy core failed ($LASTEXITCODE)" }
     python (Join-Path $PSScriptRoot "scripts\relink.py") (Join-Path $root "core") (Join-Path $dist "core")
     if (-not $?) { throw "relink core junctions failed" }
+    python (Join-Path $PSScriptRoot "scripts\write-junctions-manifest.py") (Join-Path $dist "core")
+    if (-not $?) { throw "write-junctions-manifest failed" }
+    New-Item -ItemType Directory -Path (Join-Path $dist "scripts") -Force | Out-Null
+    Copy-Item (Join-Path $PSScriptRoot "scripts\restore-junctions.ps1") (Join-Path $dist "scripts") -Force
 } else {
     Write-Host "  - core copy skipped (use -SkipCoreBuild only when core already present)"
 }
