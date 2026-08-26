@@ -596,10 +596,13 @@ class AppUpdateController:
         return {"ok": True, "message": "升级引导已启动，应用即将退出。"}
 
     def _write_bootstrap(self, exe: str) -> str:
-        """Write ``upgrade.bat``: wait for this launcher process to exit,
-        run the SFX upgrade (extracts into the install dir, overwriting),
-        then delete itself."""
+        """Write ``upgrade.bat``: wait for this launcher process to exit, run
+        the SFX upgrade (extracts into the install dir, overwriting), then
+        fall back to a self-heal + relaunch if the SFX post-script did not
+        complete (handshake via ``upgrading.flag``)."""
         pid = os.getpid()
+        flag = os.path.join(self._app_dir, "upgrading.flag")
+        app_exe = os.path.join(self._app_dir, "DeepSeek Harness.exe")
         text = (
             "@echo off\r\n"
             "setlocal\r\n"
@@ -610,7 +613,16 @@ class AppUpdateController:
             "timeout /t 2 /nobreak >nul\r\n"
             "goto waitloop\r\n"
             ":run\r\n"
+            f'echo upgraded > "{flag}"\r\n'
             f'start "" /wait "{exe}" -y\r\n'
+            'if not exist "%~dp0upgrading.flag" goto done\r\n'
+            'echo 升级包后置脚本未完成，执行自愈…\r\n'
+            'if exist "%~dp0scripts\\restore-junctions.ps1" (\r\n'
+            '  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\\restore-junctions.ps1" "%~dp0core"\r\n'
+            ')\r\n'
+            f'start "" "{app_exe}"\r\n'
+            ":done\r\n"
+            'if exist "%~dp0upgrading.flag" del /q "%~dp0upgrading.flag"\r\n'
             'if exist "%~f0" del /q "%~f0"\r\n'
             "exit /b 0\r\n"
         )

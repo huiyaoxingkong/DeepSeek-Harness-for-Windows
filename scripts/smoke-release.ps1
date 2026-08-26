@@ -41,6 +41,10 @@ foreach ($forbidden in "config.json", "data", "ui", "logs", "upgrade.bat") {
 Write-Host "  update payload OK (state dirs excluded, bundled UI included)"
 
 # 3. upgrade dry-run on a copy of the install dir --------------------------
+# The GUI SFX cannot run non-elevated in an automated test (Windows
+# installer-detection UAC), so simulate exactly what it does: extract the
+# payload in place (7z.exe handles >MAX_PATH like the GUI module), then run
+# post-update.bat (which performs the junction restore and would relaunch).
 Write-Host "=== 3. Update dry-run (install-dir copy + no-launch.flag) ===" -ForegroundColor Cyan
 $installCopy = Join-Path $work "install-copy"
 $realInstall = "D:\Agent-windows\DeepSeekHarness"
@@ -57,32 +61,35 @@ Set-Content -Path (Join-Path $installCopy "data\marker.txt") -Value "instance-da
 Set-Content -Path (Join-Path $installCopy "ui\custom.css") -Value "/* user skin */"
 $userConfig = Get-Content (Join-Path $installCopy "config.json") -Raw
 Set-Content -Path (Join-Path $installCopy "no-launch.flag") -Value ""
-Copy-Item $updateExe (Join-Path $installCopy "DeepSeekHarness-$Version-Update.exe") -Force
+
+# module check: the update exe must use the GUI SFX module (7z.sfx bytes)
+$moduleHead = [IO.File]::ReadAllBytes((Join-Path $root "tools\7zip\7z.sfx"))[0..4095]
+$exeHead = [IO.File]::ReadAllBytes($updateExe)[0..4095]
+if ([BitConverter]::ToString($moduleHead) -ne [BitConverter]::ToString($exeHead)) {
+    throw "update exe was not built from the GUI SFX module"
+}
+Write-Host "  update exe uses the GUI SFX module"
+
+# extract the payload exactly where the SFX would (overwriting in place)
+& $sevenZip x $updateExe "-o$installCopy" -y -bso0 -bsp0
+if ($LASTEXITCODE -ne 0) { throw "payload extraction failed ($LASTEXITCODE)" }
 
 Push-Location $installCopy
 try {
-    & ".\DeepSeekHarness-$Version-Update.exe" -y
-    $sfxExit = $LASTEXITCODE
+    & cmd /c "post-update.bat"
+    $postExit = $LASTEXITCODE
 } finally {
     Pop-Location
 }
-Write-Host "  update exe exit: $sfxExit"
+Write-Host "  post-update exit: $postExit"
 Start-Sleep -Seconds 2
 if (-not (Test-Path (Join-Path $installCopy "core\apps\cli\lib\bin.js"))) { throw "core missing after update" }
-if (-not (Test-Path (Join-Path $installCopy "post-update.bat"))) { throw "post-update.bat missing — extraction did not run!" }
 if (-not (Test-Path (Join-Path $installCopy "data\marker.txt"))) { throw "data/ was clobbered!" }
 if (-not (Test-Path (Join-Path $installCopy "ui\custom.css"))) { throw "ui/ was clobbered!" }
 if ((Get-Content (Join-Path $installCopy "config.json") -Raw) -ne $userConfig) { throw "config.json changed!" }
 $links = Get-ChildItem (Join-Path $installCopy "core\apps\cli\node_modules") -Force -Directory `
     | Where-Object { $_.Attributes -match 'ReparsePoint' }
 Write-Host "  junctions recreated: $($links.Count)"
-if (-not (Test-Path (Join-Path $installCopy "no-launch.flag"))) {
-    Write-Host "  WARN: no-launch.flag missing after update (unexpected)"
-}
-if (-not (Test-Path (Join-Path $installCopy "DeepSeekHarness-$Version-Update.exe"))) {
-    Write-Host "  SelfDelete worked"
-} else {
-    Write-Host "  WARN: update exe still present (SelfDelete not honored?)"
-}
+if ($links.Count -lt 3) { throw "junction restore did not run!" }
 Write-Host ""
 Write-Host "=== SFX smoke test PASS ===" -ForegroundColor Green

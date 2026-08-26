@@ -52,9 +52,11 @@ DeepSeek Harness for Windows 是基于 [deepseek-ai/deepseek-harness](https://gi
 ### 4. 外壳在线升级
 
 - 「关于」页「检查应用更新」升级为完整升级流程：发现新版本 → **一键下载升级包**
-  （SHA256 校验）→ **一键安装**（退出外壳 → 自动静默覆盖安装 → 自动重启）
+  （SHA256 校验）→ **一键安装**（退出外壳 → 自动覆盖安装 → 自动重启）
+- 安装覆盖时 Windows 会请求一次系统确认（UAC，安装程序文件名启发式），确认后全自动
 - 升级包 `DeepSeekHarness-<版本>-Update.exe` 只覆盖程序文件，**保留**
-  `data\`（插件与数据）、`ui\`（自定义界面）、`config.json` 与日志
+  `data\`（插件与数据）、`ui\`（自定义界面）、`config.json` 与日志；升级引导脚本
+  含自愈兜底：即使升级包后置脚本未执行，也会自动重建核心链接并重新启动应用
 - 全量安装包（`-Setup.exe`）与升级包（`-Update.exe`）同时发布在 GitHub Releases，
   附 SHA256 校验文件
 

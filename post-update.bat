@@ -11,4 +11,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -ComObj
 if exist "%~dp0upgrade.bat" del /q "%~dp0upgrade.bat"
 echo 升级完成，正在启动 DeepSeek Harness...
 start "" "%~dp0DeepSeek Harness.exe"
+if exist "%~dp0upgrading.flag" del /q "%~dp0upgrading.flag"
 exit /b 0

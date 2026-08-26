@@ -19,11 +19,11 @@ $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root "dist\DeepSeek Harness"
 $release = Join-Path $root "release"
 $sevenZip = Join-Path $root "tools\7zip\7z.exe"
+# The GUI SFX module extracts >MAX_PATH paths correctly (the console module
+# cannot) and runs ExecuteFile even when extraction logs recoverable errors;
+# it has no manifest, so the "Update"/"Setup" filename makes Windows ask for
+# elevation once — acceptable for an installer/upgrader.
 $sfxModule = Join-Path $root "tools\7zip\7z.sfx"
-# The console SFX module carries an asInvoker manifest: named *-Update.exe
-# it never triggers Windows installer detection (no UAC prompt). The GUI
-# module (no manifest) would, because of the "update" keyword heuristic.
-$sfxConModule = Join-Path $root "tools\7zip\7zCon.sfx"
 
 if (-not (Test-Path $sevenZip)) { throw "7z.exe missing: $sevenZip" }
 if (-not (Test-Path $sfxModule)) { throw "7z.sfx missing: $sfxModule" }
@@ -119,7 +119,7 @@ if ($LASTEXITCODE -ne 0) { throw "7z update archive failed ($LASTEXITCODE)" }
 
 Write-Host "=== Building SFX executables ===" -ForegroundColor Cyan
 New-Sfx $setupCfg $tmpSetup $setupExe $sfxModule
-New-Sfx $updateCfg $tmpUpdate $updateExe $sfxConModule
+New-Sfx $updateCfg $tmpUpdate $updateExe $sfxModule
 
 # ---------------------------------------------------------------- checksums
 
