@@ -302,13 +302,17 @@
           <div class="kv">
             <div class="kv-row"><span>应用版本</span><b id="about-app-version">-</b></div>
             <div class="kv-row"><span>端口</span><b id="about-port">-</b></div>
+            <div class="kv-row"><span>数据目录</span><b id="about-data-dir" title="">-</b></div>
             <div class="kv-row"><span>应用更新</span><b id="about-app-update">-</b></div>
           </div>
           <div class="key-row" style="max-width:none;margin-top:6px;">
             <button id="btn-check-app-update" class="btn small ghost" type="button">检查应用更新</button>
+            <button id="btn-download-app-update" class="btn small primary" type="button" hidden>下载升级包</button>
+            <button id="btn-install-app-update" class="btn small primary" type="button" hidden>立即安装更新</button>
             <a id="app-update-link" class="btn small primary" hidden target="_blank">打开下载页面</a>
           </div>
-          <div class="hint" style="margin-top:10px;">应用更新检查会查询 GitHub Releases（结果缓存 30 分钟）；核心更新请到「核心更新」页。</div>
+          <div class="hint" id="about-app-update-progress" hidden></div>
+          <div class="hint" style="margin-top:10px;">应用更新检查会查询 GitHub Releases（结果缓存 30 分钟）；核心更新请到「核心更新」页。插件与用户数据保存在上方「数据目录」内，随安装目录走，不占用 C 盘。</div>
         </div>
 
         <div class="card about">

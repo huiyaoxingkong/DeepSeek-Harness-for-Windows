@@ -44,8 +44,9 @@ Write-Host "=== build-store: pnpm install (dev toolchain, scripts off) ===" -For
 Push-Location $src
 try {
     # --shamefully-hoist: npm pack needs the bundled deps at the top-level
-    # node_modules, not inside the pnpm virtual store.
-    & $pnpm install --ignore-scripts --shamefully-hoist
+    # node_modules, not inside the pnpm virtual store. The source zip may
+    # carry a lockfile older than its package.json — never freeze it.
+    & $pnpm install --ignore-scripts --shamefully-hoist --no-frozen-lockfile
     if ($LASTEXITCODE -ne 0) { throw "pnpm install failed (exit $LASTEXITCODE)" }
 
     Write-Host "=== build-store: bundling runtime dependencies (offline enable) ===" -ForegroundColor Cyan

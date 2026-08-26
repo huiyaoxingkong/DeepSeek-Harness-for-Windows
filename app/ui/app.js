@@ -77,6 +77,8 @@ async function refreshState() {
 
   $("about-app-version").textContent = app.version || "-";
   $("about-port").textContent = String(server.port);
+  $("about-data-dir").textContent = app.dataDir || "-";
+  $("about-data-dir").title = app.dshHome || "";
   return state;
 }
 
@@ -813,10 +815,26 @@ $("btn-import-core").addEventListener("click", async () => {
 
 /* ---------------- app update (about) ---------------- */
 
-async function checkAppUpdate() {
+let latestRelease = null;      // 最近一次检查结果
+let appUpdateTimer = null;     // 下载进度轮询
+
+function renderAppUpdateControls() {
+  const dl = $("btn-download-app-update");
+  const inst = $("btn-install-app-update");
+  const link = $("app-update-link");
+  const hasUpdateAsset = latestRelease && latestRelease.latest
+    && (latestRelease.latest.assets || []).some(a => a.kind === "update");
+  dl.hidden = !(latestRelease && latestRelease.hasUpdate && hasUpdateAsset);
+  link.hidden = !(latestRelease && latestRelease.hasUpdate && !hasUpdateAsset);
+  if (latestRelease && latestRelease.hasUpdate && hasUpdateAsset) {
+    dl.disabled = false;
+    dl.textContent = "下载升级包";
+  }
+}
+
+async function checkAppUpdate(silent) {
   const btn = $("btn-check-app-update");
   const status = $("about-app-update");
-  const link = $("app-update-link");
   if (btn.disabled) return;  // 已在进行中
   btn.disabled = true;
   btn.textContent = "检查中…";
@@ -825,27 +843,86 @@ async function checkAppUpdate() {
   });
   btn.disabled = false;
   btn.textContent = "检查应用更新";
-  link.hidden = true;
+  latestRelease = res;
   if (res.ok) {
     const latest = res.latest || {};
     if (res.hasUpdate) {
       status.textContent = `发现新版本 v${latest.version}（当前 v${res.current}）`;
       status.style.color = "";
-      if (latest.url) {
-        link.href = latest.url;
-        link.hidden = false;
-      }
     } else {
       status.textContent = `已是最新版本 v${res.current}`;
       status.style.color = "";
     }
-  } else {
+  } else if (!silent) {
     status.textContent = res.message ? `检查失败：${res.message}` : "检查失败（网络不可用）";
     status.style.color = "";
   }
+  renderAppUpdateControls();
+  await refreshAppUpdateState();
 }
 
-$("btn-check-app-update").addEventListener("click", checkAppUpdate);
+function stopAppUpdatePoll() {
+  if (appUpdateTimer) { clearInterval(appUpdateTimer); appUpdateTimer = null; }
+}
+
+async function refreshAppUpdateState() {
+  const st = await callApi("app_update_state").catch(() => null);
+  if (!st) return;
+  const inst = $("btn-install-app-update");
+  const progress = $("about-app-update-progress");
+  if (st.phase === "downloading") {
+    progress.hidden = false;
+    progress.textContent = `${st.message || "下载中"}${st.progress ? " " + Math.round(st.progress * 100) + "%" : ""}`;
+    inst.hidden = true;
+    $("btn-download-app-update").disabled = true;
+    stopAppUpdatePoll();
+    appUpdateTimer = setInterval(refreshAppUpdateState, 1000);
+  } else if (st.phase === "ready") {
+    progress.hidden = false;
+    progress.textContent = `升级包已就绪（${st.sha256 ? "SHA256 校验通过" : "已下载"}）`;
+    $("btn-download-app-update").disabled = false;
+    inst.hidden = false;
+    stopAppUpdatePoll();
+  } else if (st.phase === "failed") {
+    progress.hidden = false;
+    progress.textContent = st.message || "下载失败";
+    $("btn-download-app-update").disabled = false;
+    inst.hidden = true;
+    stopAppUpdatePoll();
+  } else if (st.phase === "installing") {
+    progress.hidden = false;
+    progress.textContent = st.message || "准备安装…";
+    inst.hidden = true;
+    stopAppUpdatePoll();
+  }
+}
+
+$("btn-check-app-update").addEventListener("click", () => checkAppUpdate(false));
+
+$("btn-download-app-update").addEventListener("click", async () => {
+  const progress = $("about-app-update-progress");
+  const res = await callApi("download_app_update");
+  if (!res.ok) {
+    progress.hidden = false;
+    progress.textContent = res.message || "下载启动失败";
+    return;
+  }
+  await refreshAppUpdateState();
+});
+
+$("btn-install-app-update").addEventListener("click", async () => {
+  const progress = $("about-app-update-progress");
+  const st = await callApi("app_update_state");
+  if (!st || st.phase !== "ready") { await refreshAppUpdateState(); return; }
+  if (!confirm("将退出应用并安装更新，安装完成后自动重新启动。\n继续？")) return;
+  const res = await callApi("install_app_update");
+  if (!res.ok) {
+    progress.hidden = false;
+    progress.textContent = res.message || "安装启动失败";
+    return;
+  }
+  setTimeout(() => callApi("quit_for_update").catch(() => {}), 800);
+});
 
 /* ---------------- logs ---------------- */
 

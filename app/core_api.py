@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import subprocess
 import threading
 import time
+
+import homes
 
 log = logging.getLogger("core_api")
 
@@ -36,6 +39,10 @@ class CoreController:
         return os.path.join(self._app_dir, self._cfg.get("runtime_dir", "runtime"), "node.exe")
 
     @property
+    def runtime_dir(self) -> str:
+        return os.path.dirname(self.node_exe)
+
+    @property
     def bin_js(self) -> str:
         return os.path.join(self.core_dir, "apps", "cli", "lib", "bin.js")
 
@@ -54,6 +61,7 @@ class CoreController:
                 "url": f"http://127.0.0.1:{port}",
                 "coreReady": self.core_ready(),
                 "coreVersion": self._core_version(),
+                "dshHome": os.environ.get("DSH_HOME", ""),
             }
 
     def _core_version(self) -> str:
@@ -76,8 +84,17 @@ class CoreController:
                     "核心尚未构建。请先在“更新”页面构建/更新核心，"
                     "或在构建目录运行 build.ps1。"
                 )
-            port = self._cfg.get("port", 3080)
+            port = self._pick_port()
             env = dict(os.environ)
+            # Per-instance harness home: plugins, sessions, settings, skins
+            # all live under <app>\data\.dsh. The core child and everything
+            # it spawns (plugin CLIs, pnpm) inherit this.
+            data = homes.data_dir(self._app_dir, self._cfg)
+            env["DSH_HOME"] = homes.dsh_home(data)
+            env.update(homes.pnpm_env(data, self.runtime_dir))
+            # Make node/pnpm/dsh shim resolvable for plugins that spawn the
+            # CLI themselves (dsh-doctor, dsh-plugin-manager, remote-web-ui).
+            env["PATH"] = self.runtime_dir + os.pathsep + env.get("PATH", "")
             api_key = self._cfg.get("api_key") or ""
             if api_key:
                 env["DEEPSEEK_API_KEY"] = api_key
@@ -135,12 +152,13 @@ class CoreController:
         return True, "服务已停止"
 
     def _kill_orphans(self) -> None:
-        """Kill node processes still serving a dsh core CLI (e.g. left behind
-        when the launcher was force-closed). Matches on the canonical
-        `apps/cli/lib/bin.js` argument so unrelated node processes are never
-        touched."""
+        """Kill node processes still serving THIS instance's dsh core CLI
+        (e.g. left behind when the launcher was force-closed). Matches on the
+        canonical `apps/cli/lib/bin.js` argument AND this instance's core
+        directory, so another installation's server is never touched."""
         import csv
         import io
+        marker = os.path.normcase(self.core_dir).lower()
         try:
             out = subprocess.run(
                 ["wmic", "process", "where", "name='node.exe'", "get",
@@ -156,7 +174,8 @@ class CoreController:
             for row in rows:
                 pid = (row.get("ProcessId") or "").strip()
                 cmdline = (row.get("CommandLine") or "").lower()
-                if pid.isdigit() and "apps/cli/lib/bin.js" in cmdline:
+                if (pid.isdigit() and "apps/cli/lib/bin.js" in cmdline
+                        and marker in cmdline):
                     log.warning("killing orphaned core process pid=%s", pid)
                     try:
                         subprocess.run(
@@ -175,6 +194,36 @@ class CoreController:
         return self.start()
 
     # ------------------------------------------------------------- helpers
+
+    def _pick_port(self) -> int:
+        """The configured port when free, otherwise an ephemeral one.
+
+        A second instance on the same machine must not collide with the
+        first: fall back to an OS-assigned port and persist it so restarts
+        reuse the same value.
+        """
+        port = int(self._cfg.get("port", 3080) or 3080)
+        if not self._port_in_use(port):
+            return port
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", 0))
+                chosen = sock.getsockname()[1]
+        except OSError:
+            chosen = port + 1
+        log.warning("port %d is busy; using %d for this instance", port, chosen)
+        self._cfg.set("port", chosen)
+        self._cfg.save()
+        return chosen
+
+    @staticmethod
+    def _port_in_use(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind(("127.0.0.1", port))
+                return False
+            except OSError:
+                return True
 
     @staticmethod
     def _wait_port(port: int, timeout: float = 3.0) -> bool:

@@ -36,6 +36,10 @@ try {
     }
 
     Write-Host "  - pnpm install ..."
+    # Headless build: pnpm may need to purge an out-of-sync modules dir,
+    # which it refuses to do without a TTY unless CI is set.
+    $env:CI = "true"
+    $env:pnpm_config_confirm_modules_purge = "false"
     & $pnpm install --node-linker=hoisted --no-frozen-lockfile
     if (-not $?) { throw "pnpm install failed" }
 

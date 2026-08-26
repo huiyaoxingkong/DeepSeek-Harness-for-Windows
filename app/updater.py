@@ -8,6 +8,7 @@ backup so a failed build never leaves the app without a working core.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import shutil
@@ -18,6 +19,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
+import homes
 import relink
 
 log = logging.getLogger("updater")
@@ -52,11 +54,26 @@ def check_app_release(current_version: str, cache_ttl: float = _APP_CHECK_TTL) -
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         tag = str(data.get("tag_name") or "").lstrip("v")
+        assets = []
+        for asset in data.get("assets") or []:
+            name = str(asset.get("name") or "")
+            if not name:
+                continue
+            assets.append({
+                "name": name,
+                "size": asset.get("size") or 0,
+                "url": str(asset.get("browser_download_url") or ""),
+                "kind": ("sha256" if name.lower().endswith(".sha256")
+                         else "update" if name.endswith("-Update.exe")
+                         else "setup" if name.endswith("-Setup.exe")
+                         else "other"),
+            })
         latest = {
             "version": tag,
             "name": str(data.get("name") or tag or "unknown"),
             "url": str(data.get("html_url") or APP_RELEASES_URL),
             "publishedAt": str(data.get("published_at") or "")[:10],
+            "assets": assets,
         }
         result = {
             "ok": True,
@@ -389,6 +406,12 @@ class CoreUpdater:
         env = dict(os.environ)
         env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
         env["COREPACK_HOME"] = os.path.join(node_dir, ".corepack")
+        # Headless pnpm: allow purging an out-of-sync modules dir without a
+        # TTY, and keep the store inside the instance data dir.
+        env["CI"] = "true"
+        env["pnpm_config_confirm_modules_purge"] = "false"
+        env.update(homes.pnpm_env(homes.data_dir(self._app_dir, self._cfg),
+                                  node_dir))
         if extra_env:
             env.update(extra_env)
         log.info("run pnpm in %s: %s", src_dir, " ".join(args))
@@ -505,3 +528,197 @@ class CoreUpdater:
                 )
             except OSError:
                 return
+
+
+class AppUpdateController:
+    """Downloads the app upgrade package (a self-extracting 7z archive)
+    published as a GitHub release asset and hands off to the upgrade
+    bootstrap: the launcher exits, the bootstrap waits for the process to
+    end, then runs the package which overwrites the installation in place."""
+
+    def __init__(self, app_dir: str, settings) -> None:
+        self._app_dir = app_dir
+        self._cfg = settings
+        self._lock = threading.Lock()
+        self._cancel = threading.Event()
+        self._state: dict = {
+            "phase": "idle",  # idle|downloading|ready|installing|failed
+            "progress": 0.0,
+            "message": "",
+            "version": "",
+            "localPath": "",
+            "sha256": "",
+            "error": None,
+        }
+
+    # ------------------------------------------------------------- state
+
+    def status(self) -> dict:
+        with self._lock:
+            return {**self._state}
+
+    # ------------------------------------------------------------- actions
+
+    def download(self) -> dict:
+        with self._lock:
+            if self._state["phase"] == "downloading":
+                return {"ok": False, "message": "正在下载升级包，请稍候。"}
+            self._state.update(phase="downloading", progress=0.0,
+                               message="正在下载升级包…", error=None,
+                               localPath="", sha256="", version="")
+        self._cancel.clear()
+        threading.Thread(target=self._run_download, daemon=True).start()
+        return {"ok": True, "message": "下载已开始，进度将实时显示。"}
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def install(self) -> dict:
+        with self._lock:
+            if self._state["phase"] != "ready":
+                return {"ok": False,
+                        "message": "升级包尚未就绪，请先下载。"}
+            self._state.update(phase="installing",
+                               message="准备安装，应用即将退出…")
+            exe = self._state["localPath"]
+        bootstrap = self._write_bootstrap(exe)
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", "/min", f'"{bootstrap}"'],
+                cwd=self._app_dir,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except OSError as exc:
+            log.exception("bootstrap spawn failed")
+            with self._lock:
+                self._state.update(phase="ready", error=str(exc))
+            return {"ok": False, "message": f"无法启动升级引导: {exc}"}
+        return {"ok": True, "message": "升级引导已启动，应用即将退出。"}
+
+    def _write_bootstrap(self, exe: str) -> str:
+        """Write ``upgrade.bat``: wait for this launcher process to exit,
+        run the SFX upgrade (extracts into the install dir, overwriting),
+        then delete itself."""
+        pid = os.getpid()
+        text = (
+            "@echo off\r\n"
+            "setlocal\r\n"
+            "echo DeepSeek Harness 升级中，请勿关闭此窗口…\r\n"
+            ":waitloop\r\n"
+            f'tasklist /FI "PID eq {pid}" /NH 2>nul | find " {pid} " >nul\r\n'
+            "if errorlevel 1 goto run\r\n"
+            "timeout /t 2 /nobreak >nul\r\n"
+            "goto waitloop\r\n"
+            ":run\r\n"
+            f'start "" /wait "{exe}" -y\r\n'
+            'if exist "%~f0" del /q "%~f0"\r\n'
+            "exit /b 0\r\n"
+        )
+        path = os.path.join(self._app_dir, "upgrade.bat")
+        # cmd.exe reads batch files in the console codepage, not UTF-8:
+        # prefer the ANSI code page so a Chinese install path survives.
+        try:
+            with open(path, "w", encoding="mbcs") as fh:
+                fh.write(text)
+        except (LookupError, UnicodeEncodeError, OSError):
+            with open(path, "w", encoding="ascii", errors="replace") as fh:
+                fh.write(text)
+        return path
+
+    # ------------------------------------------------------------- worker
+
+    def _run_download(self) -> None:
+        try:
+            res = check_app_release(self._cfg.get("app_version", ""),
+                                    cache_ttl=0)
+            if not res.get("ok") or not res.get("hasUpdate"):
+                raise RuntimeError(res.get("message") or "没有可用的新版本")
+            latest = res.get("latest") or {}
+            assets = latest.get("assets") or []
+            update_asset = next((a for a in assets
+                                 if a.get("kind") == "update"), None)
+            sha_asset = next((a for a in assets
+                              if a.get("kind") == "sha256"), None)
+            if update_asset is None or not update_asset.get("url"):
+                raise RuntimeError("发布中未找到升级包（*-Update.exe）")
+            self._cleanup_old_packages(update_asset["name"])
+            dest = os.path.join(self._app_dir, update_asset["name"])
+            self._download_file(update_asset["url"], dest,
+                                int(update_asset.get("size") or 0))
+            sha256 = ""
+            if sha_asset is not None and sha_asset.get("url"):
+                expect = self._fetch_sha256(sha_asset["url"],
+                                            update_asset["name"])
+                actual = self._sha256_file(dest)
+                if expect and actual.lower() != expect.lower():
+                    os.remove(dest)
+                    raise RuntimeError("升级包 SHA256 校验失败，请重新下载")
+                sha256 = actual
+            with self._lock:
+                self._state.update(phase="ready", progress=1.0,
+                                   message="升级包已就绪，可安装。",
+                                   version=latest.get("version") or "",
+                                   localPath=dest, sha256=sha256)
+        except Exception as exc:  # network or disk failure
+            log.exception("app update download failed")
+            with self._lock:
+                self._state.update(phase="failed", error=str(exc),
+                                   message=f"下载失败: {exc}")
+
+    def _cleanup_old_packages(self, keep: str) -> None:
+        for name in os.listdir(self._app_dir):
+            if (name.startswith("DeepSeekHarness-")
+                    and name.endswith("-Update.exe") and name != keep):
+                try:
+                    os.remove(os.path.join(self._app_dir, name))
+                except OSError:
+                    pass
+
+    def _download_file(self, url: str, dest: str, total: int) -> None:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        tmp = dest + ".part"
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            got = 0
+            with open(tmp, "wb") as fh:
+                while True:
+                    chunk = resp.read(1 << 16)
+                    if not chunk:
+                        break
+                    if self._cancel.is_set():
+                        fh.close()
+                        os.remove(tmp)
+                        raise RuntimeError("下载已取消")
+                    fh.write(chunk)
+                    got += len(chunk)
+                    size = total or int(resp.headers.get("Content-Length") or 0)
+                    if size:
+                        with self._lock:
+                            self._state["progress"] = 0.05 + 0.9 * (got / size)
+                            self._state["message"] = (
+                                f"正在下载升级包 {got / 1048576:.1f} MB")
+        os.replace(tmp, dest)
+
+    @staticmethod
+    def _fetch_sha256(url: str, exe_name: str) -> str:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+        for line in text.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            if len(parts) == 1 and len(parts[0]) == 64:
+                return parts[0].strip()
+            if len(parts) >= 2:
+                name = parts[-1].lstrip("*")
+                if name == exe_name:
+                    return parts[0].strip()
+        return ""
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()

@@ -6,6 +6,13 @@ tools/
 core/
 node_modules/
 *.zip
+release/
+.pnpm-store/
+
+# temporary work / analysis scratch
+.tmp-*
+*.part
+upgrade.bat
 
 # python
 __pycache__/

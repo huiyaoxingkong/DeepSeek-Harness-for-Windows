@@ -18,7 +18,8 @@ class Settings:
         "open_browser": False,
         "core_dir": "core",
         "runtime_dir": "runtime",
-        "app_version": "1.0.1",
+        "data_dir": "data",
+        "app_version": "1.0.2",
         "last_updated_core": "",
         "onboarding_done": False,
         "store_sources": [

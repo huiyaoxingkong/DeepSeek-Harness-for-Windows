@@ -12,7 +12,30 @@
 - **插件商店**：内置 dsh-market 插件商店（初始关闭，可一键启用），支持添加 / 移除自定义商店源
 - **独立可换肤 UI**：外壳界面是纯 HTML/CSS/JS，直接编辑文件即可自定义
 - **内置 Node.js 运行时**：无需在系统安装 Node.js
-- **应用更新检测**：「关于」页可检查应用自身是否有新版本（GitHub Releases，结果缓存 30 分钟）
+- **数据随软件走**：插件、会话、设置、皮肤全部保存在安装目录 `data\` 内，不占用 C 盘；每个安装目录是独立实例
+- **dsh-web 插件生态兼容**：内置 dsh CLI/pnpm 暴露、profile 工作区自动预置，`@linxin666/dsh-*` 全家族插件开箱可用
+- **应用在线升级**：「关于」页一键下载升级包（SHA256 校验）并静默覆盖升级（保留数据与自定义界面），自动重启
+
+## 版本 1.0.2
+
+新增功能：
+
+- **插件与数据迁入软件目录**：全部用户数据（插件 / 会话 / 设置 / 皮肤 / 宠物 /
+  任务看板等）保存在安装目录 `data\`（`data\.dsh`）。首次启动自动把旧
+  `~/.dsh` 移动过来（robocopy 逐文件校验，成功后才清理 C 盘旧目录，失败自动
+  重试），并自动修复插件 `file:` 安装路径；pnpm 包仓库与缓存同样重定向到
+  `data\` 内。
+- **实例隔离**：每个安装目录独立数据 / 配置 / 端口；3080 被占用时自动改用空闲
+  端口；停止服务只清理本实例进程。
+- **dsh-web 仓库插件全量兼容**（[zhu1090093659/dsh-web](https://github.com/zhu1090093659/dsh-web)）：
+  统一注入 `DSH_HOME`；内置 `dsh.cmd` 命令 shim 并加入核心进程 PATH（dsh-doctor /
+  dsh-plugin-manager / dsh-desktop-launcher 等需要调用 dsh CLI 的插件可用），
+  node / pnpm 同步暴露；自动预置 profile `pnpm-workspace.yaml`
+  （`nodeLinker: hoisted`、`allowBuilds`、`minimumReleaseAgeExclude`），解决聚合包
+  安装、原生依赖构建与 pnpm 11 发布年龄门禁三类安装失败。
+- **外壳在线升级**：「关于」页检查应用更新 → 下载升级包（进度 + SHA256 校验）→
+  一键安装（退出 → 静默覆盖 → 自动重启）；升级只覆盖程序文件，保留
+  `data\` / `ui\` / `config.json` / 日志。
 
 ## 版本 1.0.1
 
@@ -43,11 +66,14 @@
 
 ```
 deepseek_harness/
-├── build.ps1                 # 一键构建脚本
+├── build.ps1                 # 一键构建脚本（-Version 指定版本）
+├── post-install.bat          # 安装包解压后执行（快捷方式 + junction 恢复 + 启动）
+├── post-update.bat           # 升级包解压后执行（同上）
 ├── app/                      # Python 启动器源码（exe 本体）
 │   ├── main.py               # 入口（pywebview 窗口 + 桥方法）
-│   ├── core_api.py           # dsh 服务器子进程管理 + 孤儿进程清理
-│   ├── updater.py            # GitHub 源码下载 / 构建 / 原子切换 + 本地 ZIP 导入
+│   ├── homes.py              # ★ 实例数据目录 / DSH_HOME 重定向 / 旧数据迁移 / 路径修复
+│   ├── core_api.py           # dsh 服务器子进程管理 + 端口冲突处理 + 孤儿进程清理
+│   ├── updater.py            # GitHub 源码下载 / 构建 / 原子切换 + 应用升级包下载安装
 │   ├── plugins.py            # 插件安装 / 卸载 / 启停 + 本地文件导入
 │   ├── store.py              # 插件商店源管理（内置 dshmarket 预置源）
 │   ├── settings.py           # config.json 读写
@@ -62,10 +88,12 @@ deepseek_harness/
 │   ├── install-node.ps1      # 下载便携版 Node.js 到 runtime/
 │   ├── build-core.ps1        # 构建核心（git init + pnpm install + pnpm build）
 │   ├── build-store.ps1       # 从 dsh-market-main.zip 构建商店插件包（离线打包）
+│   ├── make-release.ps1      # ★ 一键生成 Setup + Update 自解压包与 SHA256 校验
 │   ├── write-core-info.py    # 记录上游 commit 信息
 │   └── relink.py             # 构建期 junction 重链接
 ├── core/                     # deepseek-harness 源码（构建产物，可由应用更新）
 ├── runtime/                  # 便携 Node.js（node.exe + corepack + pnpm 垫片）
+├── release/                  # ★ make-release.ps1 产物（Setup/Update exe + sha256）
 └── dist/DeepSeek Harness/    # 最终应用（分发给用户整个文件夹）
 ```
 

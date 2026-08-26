@@ -15,8 +15,9 @@ import logging
 import os
 import shutil
 import subprocess
-import tempfile
 import threading
+
+import homes
 
 log = logging.getLogger("plugins")
 
@@ -43,8 +44,14 @@ class PluginManager:
 
     @property
     def profile_dir(self) -> str:
-        home = os.environ.get("DSH_HOME") or os.path.join(
-            os.path.expanduser("~"), ".dsh")
+        """The web profile directory inside the instance data home.
+
+        The launcher exports DSH_HOME (= <app>\\data\\.dsh) at startup, so
+        the core's own profile resolution and this manager agree on the same
+        directory — everything plugin-related stays inside the installation.
+        """
+        home = os.environ.get("DSH_HOME") or homes.dsh_home(
+            homes.data_dir(self._app_dir, self._cfg))
         return os.path.join(home, "profiles", PROFILE)
 
     def _read_manifest(self) -> dict | None:
@@ -120,12 +127,13 @@ class PluginManager:
         return self._run(["add", spec], "installing")
 
     def _cache_dir(self) -> str:
-        """Space-free cache for local plugin files. The dsh CLI forwards path
+        """Space-free cache for local plugin files, kept inside the instance
+        data directory (no C-drive footprint). The dsh CLI forwards path
         specs to pnpm through a cmd shim that splits unquoted space paths
         (the app folder itself is "DeepSeek Harness"), so anything with a
         space in its path must be staged here first."""
-        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
-        cache = os.path.join(base, "DeepSeek-Harness-Desktop", "plugin-cache")
+        cache = os.path.join(
+            homes.data_dir(self._app_dir, self._cfg), "plugin-cache")
         os.makedirs(cache, exist_ok=True)
         return cache
 
@@ -203,11 +211,20 @@ class PluginManager:
             self._state.update(phase=phase, message="", output=[], error=None)
             if self._core.is_running():
                 self._core.stop()
-        node_dir = os.path.dirname(self._core.node_exe)
+        node_dir = self._core.runtime_dir
+        # Keep the profile compatible with the @linxin666/dsh-web plugin
+        # family (hoisted linker, allowBuilds, release-age exclusion) and
+        # make the dsh CLI findable for plugins that spawn it themselves.
+        data = homes.data_dir(self._app_dir, self._cfg)
+        home = os.environ.get("DSH_HOME") or homes.dsh_home(data)
+        homes.ensure_profile_workspace(home)
+        homes.ensure_dsh_shim(node_dir, self._core.bin_js)
         cmd = [self._core.node_exe, self._core.bin_js, "plugin",
                "--profile", PROFILE, *args]
         env = dict(os.environ)
         env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+        env["DSH_HOME"] = home
+        env.update(homes.pnpm_env(data, node_dir))
         log.info("plugin run: %s", " ".join(cmd))
         worker = threading.Thread(
             target=self._run_worker, args=(cmd, env, phase), daemon=True)

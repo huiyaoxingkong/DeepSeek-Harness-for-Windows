@@ -19,6 +19,7 @@ import time
 import webview
 
 import core_api
+import homes
 import junctions
 import plugins
 import providers
@@ -50,6 +51,7 @@ class Bridge:
         self._cfg = settings.Settings(os.path.join(APP_DIR, "config.json"))
         self._core = core_api.CoreController(APP_DIR, self._cfg)
         self._updater = updater.CoreUpdater(APP_DIR, self._cfg, self._core)
+        self._app_updater = updater.AppUpdateController(APP_DIR, self._cfg)
         self._plugins = plugins.PluginManager(APP_DIR, self._cfg, self._core)
         self._store = store.StoreManager(APP_DIR, self._cfg, self._plugins)
         # Core workspace junctions may be missing right after a generic
@@ -85,6 +87,7 @@ class Bridge:
     # ------------------------------------------------------------- state
 
     def get_state(self) -> dict:
+        data = homes.data_dir(APP_DIR, self._cfg)
         state = {
             "app": {
                 "name": APP_NAME,
@@ -96,6 +99,8 @@ class Bridge:
                 "autoStart": self._cfg.get("auto_start", False),
                 "openBrowser": self._cfg.get("open_browser", False),
                 "onboardingDone": self._cfg.get("onboarding_done", False),
+                "dataDir": data,
+                "dshHome": os.environ.get("DSH_HOME", ""),
             },
             "server": self._core.status(),
             "update": self._updater.status(),
@@ -281,6 +286,29 @@ class Bridge:
     def check_app_update(self) -> dict:
         return updater.check_app_release(self._cfg.get("app_version", ""))
 
+    def app_update_state(self) -> dict:
+        return self._app_updater.status()
+
+    def download_app_update(self) -> dict:
+        return self._app_updater.download()
+
+    def install_app_update(self) -> dict:
+        return self._app_updater.install()
+
+    def quit_for_update(self) -> dict:
+        """Close the shell so the upgrade bootstrap can replace files."""
+        threading.Thread(target=self._shutdown_for_update, daemon=True).start()
+        return {"ok": True}
+
+    def _shutdown_for_update(self) -> None:
+        time.sleep(0.4)
+        self._core.stop()
+        try:
+            if webview.windows:
+                webview.windows[0].destroy()
+        except Exception as exc:  # window may already be gone
+            log.warning("window destroy failed: %s", exc)
+
     # ------------------------------------------------------------- update
 
     def check_update(self) -> dict:
@@ -296,6 +324,17 @@ class Bridge:
 
 def main() -> None:
     cfg = settings.Settings(os.path.join(APP_DIR, "config.json"))
+    # Per-instance portable home: <app>\data\.dsh holds plugins, sessions,
+    # settings and skins. Set DSH_HOME first, then migrate the legacy
+    # ~/.dsh (move, one-time) and heal the profile for the plugin family.
+    data_dir, home = homes.apply_home_env(APP_DIR, cfg)
+    homes.migrate_legacy_home(APP_DIR, cfg)
+    homes.heal_profile_file_deps(home, APP_DIR)
+    homes.ensure_profile_workspace(home)
+    core_stub = core_api.CoreController(APP_DIR, cfg)
+    homes.ensure_dsh_shim(core_stub.runtime_dir, core_stub.bin_js)
+    log.info("instance data dir: %s (dsh home: %s)", data_dir, home)
+
     bridge = Bridge()
     port = cfg.get("port", 3080)
     ui = ui_server.UiServer(APP_DIR, bridge)

@@ -1,9 +1,10 @@
 # One-click build: portable Node runtime -> core build -> PyInstaller exe -> dist/
 #
-# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller]
+# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller] [-Version 1.0.2]
 param(
     [switch]$SkipCoreBuild,
-    [switch]$SkipPyInstaller
+    [switch]$SkipPyInstaller,
+    [string]$Version = "1.0.2"
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,7 +39,17 @@ if (-not $SkipPyInstaller) {
 Write-Host "=== Assembling dist\DeepSeek Harness ===" -ForegroundColor Cyan
 $dist = Join-Path $root "dist\DeepSeek Harness"
 $pkg = Join-Path $root "dist\pyinstaller\DeepSeek Harness"
-if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
+if (Test-Path $dist) {
+    # robocopy handles the >260-char paths Remove-Item chokes on; mirroring
+    # an empty dir empties the tree, then the leftover skeleton is removed.
+    $empty = Join-Path $root "dist\.empty"
+    New-Item -ItemType Directory -Path $empty -Force | Out-Null
+    robocopy $empty $dist /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -gt 7) { throw "robocopy purge failed ($LASTEXITCODE)" }
+    Remove-Item $dist -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $empty -Force
+}
+if (Test-Path $dist) { throw "old dist could not be removed" }
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
 Copy-Item (Join-Path $pkg "*") -Destination $dist -Recurse -Force
@@ -64,6 +75,10 @@ if (-not $SkipCoreBuild) {
 
 New-Item -ItemType Directory -Path (Join-Path $dist "logs") -Force | Out-Null
 
+Write-Host "  - copying post-install / post-update scripts..."
+Copy-Item (Join-Path $PSScriptRoot "post-install.bat") $dist -Force
+Copy-Item (Join-Path $PSScriptRoot "post-update.bat") $dist -Force
+
 Write-Host "  - copying shell UI (user-editable web files)..."
 robocopy (Join-Path $root "app\ui") (Join-Path $dist "ui") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
 if ($LASTEXITCODE -gt 7) { throw "robocopy ui failed ($LASTEXITCODE)" }
@@ -80,7 +95,8 @@ $config = @{
     open_browser  = $false
     core_dir      = "core"
     runtime_dir   = "runtime"
-    app_version   = "1.0.1"
+    data_dir      = "data"
+    app_version   = $Version
     last_updated_core = ""
     store_sources = @(
         @{
