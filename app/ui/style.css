@@ -163,12 +163,19 @@ a:hover { text-decoration: underline; }
 .banner.err { background: rgba(248, 113, 113, .12); color: var(--err); border: 1px solid rgba(248, 113, 113, .35); }
 .banner.info { background: rgba(77, 107, 254, .10); color: var(--accent-2); border: 1px solid rgba(77, 107, 254, .35); }
 
+/* 工作台页全宽铺满（不受 .page 的 960px 限制），纵向填满剩余视口，
+   避免窗口全屏时 iframe 两侧留白与双重滚动条。 */
+#page-workspace {
+  max-width: none; display: flex; flex-direction: column;
+  min-height: calc(100vh - 48px);
+}
+
 .frame-wrap {
-  height: calc(100vh - 150px); min-height: 480px;
+  flex: 1; height: auto; min-height: 320px;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius); overflow: hidden; position: relative;
 }
-.frame { width: 100%; height: 100%; border: 0; background: #fff; }
+.frame { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
 
 .frame-empty {
   height: 100%; display: grid; place-content: center; text-align: center; gap: 8px;
@@ -177,7 +184,17 @@ a:hover { text-decoration: underline; }
 .empty-title { font-size: 18px; font-weight: 600; }
 .empty-sub { font-size: 13px; color: var(--fg-faint); }
 
+/* 启动中的加载指示 */
+.spinner {
+  width: 26px; height: 26px; margin: 0 auto; border-radius: 50%;
+  border: 3px solid var(--border); border-top-color: var(--accent-2);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* ---------------- immersive mode ---------------- */
+
+@keyframes imfade { from { opacity: .35; } to { opacity: 1; } }
 
 .float-exit {
   position: absolute; top: 10px; right: 10px; z-index: 20;
@@ -194,10 +211,35 @@ body.immersive .page-head,
 body.immersive .save-toast { display: none !important; }
 body.immersive .content { padding: 0; overflow: hidden; }
 body.immersive .page { max-width: none; height: 100vh; }
+body.immersive #page-workspace { min-height: 100vh; }
 body.immersive .frame-wrap {
   height: 100vh; min-height: 0; border: 0; border-radius: 0; position: static;
+  animation: imfade .22s ease;
 }
 body.immersive .frame { display: block; }
+
+/* ---------------- 外观系统（主题） ---------------- */
+
+.themes-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.theme-chip {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel);
+  color: var(--fg); cursor: pointer; font-size: 13px;
+}
+.theme-chip:hover { border-color: var(--accent-2); }
+.theme-chip.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-swatch { width: 16px; height: 16px; border-radius: 50%; background: #161b23; flex: 0 0 auto; }
+.theme-swatch[data-theme-id="builtin-midnight"] { background: #161b23; }
+.theme-swatch[data-theme-id="builtin-ocean"] { background: linear-gradient(135deg, #071318, #0ea5b7); }
+.theme-swatch[data-theme-id="builtin-sunset"] { background: linear-gradient(135deg, #160e14, #e8633a); }
+.theme-swatch[data-theme-id="builtin-forest"] { background: linear-gradient(135deg, #0d140f, #3fa55c); }
+.theme-swatch[data-theme-id="builtin-light"] { background: #f4f6fa; border: 1px solid #d9dee8; }
+
+/* ---------------- shell pet layer（桌宠接口挂载层） ---------------- */
+
+#shell-pet-layer { position: fixed; inset: 0; pointer-events: none; z-index: 9999; }
+.shell-pet { position: absolute; user-select: none; pointer-events: auto; }
 
 /* ---------------- plugins ---------------- */
 
@@ -224,7 +266,14 @@ body.immersive .frame { display: block; }
 .tag.bundle { background: rgba(77, 107, 254, .18); color: var(--accent-2); }
 .tag.builtin { background: rgba(139, 147, 165, .15); color: var(--fg-dim); }
 .tag.plain { background: rgba(251, 191, 36, .12); color: var(--warn); }
+.tag.miss { background: rgba(244, 94, 106, .16); color: #ff808a; }
 .plugin-meta { font-size: 12px; color: var(--fg-faint); margin-top: 3px; }
+
+/* ---------------- logs (E1) ---------------- */
+.log-view .log-line { font-family: Consolas, "Courier New", monospace; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.log-line.log-err { color: var(--err); }
+.log-line.log-warn { color: var(--warn); }
+#log-filter { font-size: 12px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--fg); }
 .plugin-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 
 /* ---------------- store (dshmarket-inspired) ----------------

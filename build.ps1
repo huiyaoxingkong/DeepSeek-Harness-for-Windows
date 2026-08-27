@@ -1,10 +1,14 @@
-# One-click build: portable Node runtime -> core build -> PyInstaller exe -> dist/
+﻿# One-click build: portable Node runtime -> core build -> PyInstaller exe -> dist/
 #
-# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller] [-Version 1.0.2]
+# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller] [-Version 1.0.3] [-Flavor Lazy|Minimal]
+#   Lazy    (default) ships portable Node + Git under runtime\ (self-contained)
+#   Minimal ships no runtimes: the app uses system Node/Git and degrades gracefully
 param(
     [switch]$SkipCoreBuild,
     [switch]$SkipPyInstaller,
-    [string]$Version = "1.0.2"
+    [string]$Version = "1.0.3",
+    [ValidateSet("Lazy", "Minimal")]
+    [string]$Flavor = "Lazy"
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,9 +16,13 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 Write-Host "=== DeepSeek Harness Desktop build ===" -ForegroundColor Cyan
 
-# 1. portable Node runtime
-& (Join-Path $PSScriptRoot "scripts\install-node.ps1")
-if (-not $?) { throw "install-node failed" }
+# 1. portable Node runtime (Lazy flavor only; Minimal uses system Node)
+if ($Flavor -eq "Lazy") {
+    & (Join-Path $PSScriptRoot "scripts\install-node.ps1")
+    if (-not $?) { throw "install-node failed" }
+} else {
+    Write-Host "  - portable Node skipped (Minimal flavor: user-provided Node)"
+}
 
 # 2. build the core (git init + pnpm install + pnpm build)
 if (-not $SkipCoreBuild) {
@@ -22,9 +30,10 @@ if (-not $SkipCoreBuild) {
     if (-not $?) { throw "build-core failed" }
 }
 
-# 2b. build the bundled store plugin from the local source archive
-& (Join-Path $PSScriptRoot "scripts\build-store.ps1")
-if (-not $?) { throw "build-store failed" }
+# 2b. bundled store plugin: rebundle the official dshmarket tarball with its
+# runtime deps embedded (offline preseed). Skips when the tgz already exists.
+python (Join-Path $PSScriptRoot "scripts\rebundle-store-tgz.py")
+if (-not $?) { throw "rebundle-store-tgz failed" }
 
 # 3. PyInstaller
 if (-not $SkipPyInstaller) {
@@ -54,9 +63,19 @@ New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
 Copy-Item (Join-Path $pkg "*") -Destination $dist -Recurse -Force
 
-Write-Host "  - copying runtime (portable Node.js)..."
-robocopy (Join-Path $root "runtime") (Join-Path $dist "runtime") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
-if ($LASTEXITCODE -gt 7) { throw "robocopy runtime failed ($LASTEXITCODE)" }
+if ($Flavor -eq "Minimal") {
+    Write-Host "  - runtime copy skipped (Minimal flavor: user-provided Node/Git)"
+} else {
+    $gitExe = Join-Path $root "runtime\git\cmd\git.exe"
+    if (-not (Test-Path $gitExe)) {
+        Write-Host "  - portable Git missing; downloading (lazy package)..."
+        python (Join-Path $PSScriptRoot "scripts\download-portable-git.py")
+        if (-not $?) { throw "download-portable-git failed" }
+    }
+    Write-Host "  - copying runtime (portable Node.js + Git)..."
+    robocopy (Join-Path $root "runtime") (Join-Path $dist "runtime") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
+    if ($LASTEXITCODE -gt 7) { throw "robocopy runtime failed ($LASTEXITCODE)" }
+}
 
 Write-Host "  - copying core (built dsh source, junction-aware)..."
 if (-not $SkipCoreBuild) {
@@ -79,6 +98,10 @@ Write-Host "  - copying post-install / post-update scripts..."
 Copy-Item (Join-Path $PSScriptRoot "post-install.bat") $dist -Force
 Copy-Item (Join-Path $PSScriptRoot "post-update.bat") $dist -Force
 
+Write-Host "  - copying user helper scripts (start / stop / shortcut)..."
+Copy-Item (Join-Path $PSScriptRoot "app\assets\*") -Destination $dist -Force
+Copy-Item (Join-Path $PSScriptRoot "app\dsh.ico") $dist -Force
+
 Write-Host "  - copying shell UI (user-editable web files)..."
 robocopy (Join-Path $root "app\ui") (Join-Path $dist "ui") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
 if ($LASTEXITCODE -gt 7) { throw "robocopy ui failed ($LASTEXITCODE)" }
@@ -86,6 +109,12 @@ if ($LASTEXITCODE -gt 7) { throw "robocopy ui failed ($LASTEXITCODE)" }
 Write-Host "  - copying bundled store plugin packages..."
 robocopy (Join-Path $root "app\store") (Join-Path $dist "store") /E /NFL /NDL /NJH /NJS /NC /NS /NP | Out-Null
 if ($LASTEXITCODE -gt 7) { throw "robocopy store failed ($LASTEXITCODE)" }
+
+if ($Flavor -eq "Lazy") {
+    Write-Host "  - verifying shipped core boots (--version)..."
+    & (Join-Path $dist "runtime\node.exe") (Join-Path $dist "core\apps\cli\lib\bin.js") --version
+    if ($LASTEXITCODE -ne 0) { throw "shipped core does not boot" }
+}
 
 $config = @{
     api_key       = ""
@@ -102,7 +131,7 @@ $config = @{
         @{
             name     = "dshmarket"
             label    = "dshmarket 插件商店"
-            spec     = "store/dshmarket-1.21.4.tgz"
+            spec     = "store/dshmarket-1.33.0.tgz"
             homepage = "https://github.com/dsh-market/dsh-market"
             catalog  = "https://awesome-dsh-plugin.com/plugins.json"
             builtin  = $true

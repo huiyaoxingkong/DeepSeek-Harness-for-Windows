@@ -1,0 +1,18 @@
+/* 外观：森林绿（Forest）——内置外观之一，仅覆盖 CSS 变量 */
+:root {
+  --bg: #0d140f;
+  --panel: #131d15;
+  --panel-2: #1a281d;
+  --fg: #e2ece4;
+  --fg-dim: #7f9b85;
+  --fg-faint: #54705c;
+  --border: #223529;
+  --accent: #3fa55c;
+  --accent-2: #63cf83;
+  --ok: #4ade80;
+  --warn: #e8c15a;
+  --err: #ef8d8d;
+  --shadow: 0 8px 24px rgba(4, 18, 8, .55);
+}
+.sidebar { background: linear-gradient(180deg, #162219, #0d140f); }
+.brand-mark { background: linear-gradient(135deg, #3fa55c, #63cf83); }

@@ -13,6 +13,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import socket
 import socketserver
 import threading
@@ -28,6 +29,7 @@ ROUTES = {
 class _Handler(http.server.SimpleHTTPRequestHandler):
     ui_root: str = ""
     bridge = None
+    shell_plugins = None
 
     def log_message(self, *args) -> None:  # silence default stderr logging
         pass
@@ -43,6 +45,8 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/plugin/"):
+            return self._serve_plugin_file(parsed.path)
         if parsed.path == "/api/ping":
             return self._send_json({"ok": True, "name": "dsh-desktop-ui"})
         if parsed.path.startswith("/api/bridge/"):
@@ -96,6 +100,33 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             log.exception("bridge %s failed", method)
             return self._send_json({"ok": False, "message": str(exc)}, 500)
 
+    def _serve_plugin_file(self, path: str) -> None:
+        """Serve a shell-plugin asset: /plugin/<id>/<relpath>.
+
+        The id is strictly validated and the resolved file must stay inside
+        the plugin directory (user root shadows the bundled root).
+        """
+        parts = [p for p in urllib.parse.unquote(path).split("/") if p]
+        if len(parts) < 2 or self.shell_plugins is None:
+            return self._send_json({"ok": False, "message": "not found"}, 404)
+        plugin_id, rel = parts[1], "/".join(parts[2:])
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", plugin_id):
+            return self._send_json({"ok": False, "message": "forbidden"}, 403)
+        if not rel:
+            rel = "main.js"
+        full = self.shell_plugins.resolve(plugin_id, rel)
+        if not full:
+            return self._send_json({"ok": False, "message": "not found"}, 404)
+        ctype, _ = mimetypes.guess_type(full)
+        with open(full, "rb") as fh:
+            body = fh.read()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype or "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _serve_file(self, path: str) -> None:
         relative = urllib.parse.unquote(path.lstrip("/"))
         if not relative or relative.endswith("/"):
@@ -119,7 +150,7 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 class UiServer:
     """Binds an ephemeral localhost port and serves app/ui/."""
 
-    def __init__(self, app_dir: str, bridge=None) -> None:
+    def __init__(self, app_dir: str, bridge=None, shell_plugins=None) -> None:
         self.ui_root = os.path.join(app_dir, "ui")
         if not os.path.isdir(self.ui_root):
             bundled = os.path.join(app_dir, "_internal", "ui")
@@ -127,6 +158,7 @@ class UiServer:
                 self.ui_root = bundled
         self.port = 0
         self.bridge = bridge
+        self.shell_plugins = shell_plugins
         self._httpd: socketserver.TCPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -139,6 +171,7 @@ class UiServer:
             handler = type("BoundHandler", (_Handler,), {
                 "ui_root": self.ui_root,
                 "bridge": self.bridge,
+                "shell_plugins": self.shell_plugins,
             })
             self._httpd = socketserver.TCPServer(("127.0.0.1", self.port), handler)
             self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)

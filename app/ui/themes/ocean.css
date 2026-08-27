@@ -1,0 +1,18 @@
+/* 外观：深海蓝青（Ocean）——内置外观之一，仅覆盖 CSS 变量 */
+:root {
+  --bg: #071318;
+  --panel: #0c1f27;
+  --panel-2: #123040;
+  --fg: #dcebf0;
+  --fg-dim: #7fa3b0;
+  --fg-faint: #4f7483;
+  --border: #14404e;
+  --accent: #0ea5b7;
+  --accent-2: #3cc8da;
+  --ok: #2dd4a7;
+  --warn: #f5c26b;
+  --err: #f08585;
+  --shadow: 0 8px 24px rgba(0, 20, 28, .5);
+}
+.sidebar { background: linear-gradient(180deg, #0a1c24, #071318); }
+.brand-mark { background: linear-gradient(135deg, #0ea5b7, #3cc8da); }

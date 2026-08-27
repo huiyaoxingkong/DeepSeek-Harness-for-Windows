@@ -49,9 +49,10 @@ function showPage(name) {
   });
   if (name === "logs") refreshLog();
   if (name === "update") renderLocalUpdate();   // 仅显示本地版本，不自动检查
-  if (name === "plugins") refreshPlugins();
+  if (name === "plugins") { refreshPlugins(); refreshShellPlugins(); }
   if (name === "settings") loadSettings();      // 进入设置页时重新加载（含 API Key 掩码）
   if (name === "about") checkAppUpdate(false);  // 进入关于页时静默检查（带缓存）
+  if (shellPageHooks[name]) { try { shellPageHooks[name](); } catch (e) { console.error("[ShellPlugin] onShow 失败", e); } }
 }
 
 document.querySelectorAll(".nav-item").forEach(btn => {
@@ -68,7 +69,7 @@ async function refreshState() {
   dot.classList.toggle("on", running);
   dot.classList.toggle("err", !server.coreReady);
   $("sidebar-status-text").textContent = running
-    ? `运行中 :${server.port}` : (server.coreReady ? "未启动" : "核心未构建");
+    ? `${t("status.running")} :${server.port}` : (server.coreReady ? t("status.stopped") : t("status.noCore"));
 
   $("btn-start").hidden = running;
   $("btn-stop").hidden = !running;
@@ -79,7 +80,20 @@ async function refreshState() {
   $("about-port").textContent = String(server.port);
   $("about-data-dir").textContent = app.dataDir || "-";
   $("about-data-dir").title = app.dshHome || "";
+  renderHealth(app.health);
   return state;
+}
+
+function renderHealth(h) {
+  const view = $("health-view");
+  if (!view || !h) return;
+  if (h.skipped) {
+    view.textContent = "跳过：未检测到 web profile（首次启动或数据为空）";
+  } else if (h.ok) {
+    view.textContent = `✅ ${h.ts || ""} 插件层与数据目录验证通过（dump-config 退出码 0）`;
+  } else {
+    view.textContent = `⚠️ ${h.ts || ""} 验证异常：${h.error || ("退出码 " + h.exit)}${h.tail ? " · " + h.tail : ""}`;
+  }
 }
 
 function showBanner(type, text) {
@@ -90,14 +104,39 @@ function showBanner(type, text) {
   setTimeout(() => b.classList.add("hidden"), 6000);
 }
 
-async function startServer() {
-  const res = await callApi("start_server");
-  if (res.ok) {
-    showBanner("ok", res.message || "服务已启动");
-    await refreshState();
-    openFrame($("dsh-frame"), `http://127.0.0.1:${res.port || await getPort()}`);
+function setFrameLoading(on, text) {
+  const empty = $("frame-empty");
+  const title = empty.querySelector(".empty-title");
+  const sub = empty.querySelector(".empty-sub");
+  if (on) {
+    title.textContent = t("loading.title");
+    sub.textContent = text || t("loading.hint");
+    if (!empty.querySelector(".spinner")) {
+      const sp = document.createElement("div");
+      sp.className = "spinner";
+      empty.insertBefore(sp, title);
+    }
   } else {
-    showBanner("err", res.message || "启动失败");
+    title.textContent = t("empty.title");
+    sub.textContent = t("empty.sub");
+    const sp = empty.querySelector(".spinner");
+    if (sp) sp.remove();
+  }
+}
+
+async function startServer() {
+  setFrameLoading(true);
+  try {
+    const res = await callApi("start_server");
+    if (res.ok) {
+      showBanner("ok", res.message || "服务已启动");
+      await refreshState();
+      openFrame($("dsh-frame"), `http://127.0.0.1:${res.port || await getPort()}`);
+    } else {
+      showBanner("err", res.message || "启动失败");
+    }
+  } finally {
+    setFrameLoading(false);
   }
 }
 
@@ -111,6 +150,7 @@ function stopServer() {
     showBanner(r.ok ? "ok" : "err", r.message);
     $("dsh-frame").classList.add("hidden");
     $("frame-empty").classList.remove("hidden");
+    exitImmersive();
     return refreshState();
   });
 }
@@ -127,20 +167,28 @@ function openFrame(iframe, url) {
   iframe.src = url;
   iframe.classList.remove("hidden");
   $("frame-empty").classList.add("hidden");
-  document.body.classList.add("immersive");
+  setImmersive(true, false);
   document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
 }
 
+/* 沉浸模式：记住上次状态（config.json -> ui_state.immersive），
+   退出时回到工作台页；切换不再重载 iframe。 */
+function setImmersive(on, persist) {
+  document.body.classList.toggle("immersive", on);
+  if (persist !== false) {
+    callApi("set_ui_state", { immersive: on }).catch(() => {});
+  }
+}
+
 function exitImmersive() {
-  document.body.classList.remove("immersive");
+  setImmersive(false);
   document.querySelectorAll(".nav-item").forEach(b => {
     b.classList.toggle("active", b.dataset.page === "workspace");
   });
 }
 
 $("btn-immersive").addEventListener("click", () => {
-  if (document.body.classList.contains("immersive")) exitImmersive();
-  else document.body.classList.add("immersive");
+  setImmersive(!document.body.classList.contains("immersive"));
 });
 
 $("btn-exit-immersive").addEventListener("click", exitImmersive);
@@ -190,7 +238,71 @@ async function loadSettings() {
   $("port").value = String(state.app.port);
   $("auto-start").checked = state.app.autoStart;
   $("open-browser").checked = state.app.openBrowser;
+  $("close-to-tray").checked = state.app.closeToTray;
+  $("auto-launch").checked = state.app.autoLaunch;
+  $("proxy-url").value = state.app.proxyUrl || "";
+  $("npm-registry").value = state.app.npmRegistry || "";
+  $("github-mirror").value = state.app.githubMirror || "";
   refreshProviders();
+  renderTools(state.tools);
+  renderThemeList();
+  refreshInstances();
+  if ($("lang-select")) $("lang-select").value = window.__i18nLang || "zh";
+}
+
+/* E4: 本机实例面板 */
+async function refreshInstances() {
+  const box = $("instances-list");
+  if (!box) return;
+  const data = await callApi("list_instances").catch(() => null);
+  const list = (data && data.instances) || [];
+  box.innerHTML = list.length
+    ? list.map(i => `
+      <div class="plugin-row"><div class="plugin-info">
+        <div class="plugin-name">PID ${esc(i.pid)}
+          ${i.isSelf ? '<span class="tag bundle">本实例</span>' : ""}
+          ${i.port ? `<span class="tag plain">端口 ${esc(i.port)}</span>` : ""}
+        </div>
+        <div class="plugin-meta">${esc(i.path)}</div>
+      </div></div>`).join("")
+    : '<div class="plugin-empty">未检测到运行中的实例</div>';
+}
+
+async function setLang(lang, persist) {
+  window.__i18nLang = lang === "en" ? "en" : "zh";
+  if (typeof applyI18n === "function") applyI18n();
+  if (persist !== false) {
+    await callApi("set_ui_state", { lang: window.__i18nLang }).catch(() => {});
+  }
+  await loadSettings();
+  renderThemeList();
+}
+
+$("lang-select") && $("lang-select").addEventListener("change", () => {
+  setLang($("lang-select").value);
+});
+
+function renderTools(tools) {
+  const box = $("tools-list");
+  if (!box || !tools) return;
+  const flavor = tools.flavor === "lazy" ? t("tools.lazy") : t("tools.minimal");
+  const rows = [
+    { key: "node", label: "Node.js", note: "dsh 核心与插件安装必需" },
+    { key: "git", label: "Git", note: "git 图形插件 / 插件 git 源安装" },
+    { key: "bash", label: "Git Bash", note: "dsh-liangshen 的 bash 工具" },
+  ];
+  const labels = { bundled: t("tools.bundled"), system: t("tools.system"), missing: t("tools.missing") };
+  const cls = { bundled: "bundle", system: "builtin", missing: "miss" };
+  box.innerHTML = `<div class="plugin-row"><div class="plugin-info">
+      <div class="plugin-name">${esc(flavor)}</div></div></div>` +
+    rows.map(r => {
+      const t = tools[r.key] || { mode: "missing", path: "" };
+      return `<div class="plugin-row"><div class="plugin-info">
+        <div class="plugin-name">${esc(r.label)}
+          <span class="tag ${cls[t.mode]}">${labels[t.mode]}</span></div>
+        <div class="plugin-meta">${esc(t.path || "未检测到")} · ${esc(r.note)}</div>
+      </div></div>`;
+    }).join("");
 }
 
 async function refreshProviders() {
@@ -217,8 +329,22 @@ async function refreshProviders() {
 
 $("btn-refresh-providers").addEventListener("click", refreshProviders);
 
+/* C3: 一键填入 dsh-web 全家桶聚合包 */
+$("preset-web-all").addEventListener("click", () => {
+  $("plugin-spec").value = "@linxin666/dsh-web-all";
+  $("plugin-spec").focus();
+});
+
 $("btn-change-key").addEventListener("click", () => {
   setKeyMode(apiKeyEditing ? "masked" : "editing");
+});
+
+$("auto-launch").addEventListener("change", async () => {
+  const res = await callApi("set_auto_launch", { enabled: $("auto-launch").checked });
+  if (!res.ok) {
+    $("auto-launch").checked = !$("auto-launch").checked;
+    alert(res.message || "设置开机自启失败");
+  }
 });
 
 $("btn-toggle-key").addEventListener("click", async () => {
@@ -274,6 +400,10 @@ $("btn-save-settings").addEventListener("click", async () => {
     port: parseInt($("port").value, 10) || 3080,
     auto_start: $("auto-start").checked,
     open_browser: $("open-browser").checked,
+    close_to_tray: $("close-to-tray").checked,
+    proxy_url: $("proxy-url").value,
+    npm_registry: $("npm-registry").value,
+    github_mirror: $("github-mirror").value,
   });
   const toast = $("save-toast");
   toast.classList.add("show");
@@ -789,6 +919,38 @@ $("btn-update").addEventListener("click", async () => {
   updatePollTimer = setInterval(pollUpdate, 1500);
 });
 
+/* ---------------- core release tag update (B2) ---------------- */
+
+async function loadCoreReleases() {
+  const select = $("core-release-select");
+  const res = await callApi("list_core_releases").catch(() => ({ ok: false }));
+  const list = (res && res.releases) || [];
+  select.innerHTML = '<option value="">跟随 master（最新开发版）</option>' +
+    list.map(r => `<option value="${esc(r.tag)}">${esc(r.tag)} · ${esc(r.name || "")} · ${esc(r.published)}</option>`).join("");
+  select.dataset.loaded = "1";
+}
+
+$("btn-refresh-releases").addEventListener("click", () => {
+  $("core-release-select").innerHTML = '<option value="">加载中…</option>';
+  loadCoreReleases();
+});
+
+$("btn-update-tag").addEventListener("click", async () => {
+  const select = $("core-release-select");
+  if (!select.dataset.loaded) await loadCoreReleases();
+  const tag = select.value || "";
+  const label = tag || "master（最新开发版）";
+  if (!confirm(`将从 ${label} 的源码重新构建并切换核心（失败自动回退）。\n构建期间请勿关闭应用。继续？`)) return;
+  const res = await callApi("update_core", { tag });
+  showBannerEl($("update-banner"), res.ok ? "ok" : "err", res.message);
+  if (res.ok) {
+    stopUpdatePoll();
+    updatePollTimer = setInterval(pollUpdate, 1500);
+  }
+});
+
+loadCoreReleases();
+
 /* ---------------- core local import ---------------- */
 
 async function pickCoreArchive() {
@@ -926,14 +1088,55 @@ $("btn-install-app-update").addEventListener("click", async () => {
 
 /* ---------------- logs ---------------- */
 
-function refreshLog() {  callApi("read_log").then(res => {
-    $("log-view").textContent = res || "(空)";
-    $("log-view").scrollTop = $("log-view").scrollHeight;
+let logLinesRaw = "";
+
+function renderLog() {
+  const view = $("log-view");
+  const filter = ($("log-filter").value || "").toLowerCase();
+  const lines = logLinesRaw.split("\n").filter(l => !filter || l.toLowerCase().includes(filter));
+  const render = lines.map(l => {
+    let cls = "";
+    if (/error|failed|exception|traceback|错误|失败|异常/i.test(l)) cls = "log-err";
+    else if (/warn|deprecat|警告/i.test(l)) cls = "log-warn";
+    return `<div class="log-line ${cls}">${esc(l) || "&nbsp;"}</div>`;
+  }).join("");
+  view.innerHTML = render || '<div class="log-line">(无匹配日志)</div>';
+  view.scrollTop = view.scrollHeight;
+}
+
+function refreshLog() {
+  callApi("read_log").then(res => {
+    logLinesRaw = res || "";
+    renderLog();
   }).catch(() => {
-    $("log-view").textContent = "(读取日志失败)";
+    logLinesRaw = "(读取日志失败)";
+    renderLog();
   });
 }
+
 $("btn-refresh-log").addEventListener("click", refreshLog);
+$("log-filter").addEventListener("input", renderLog);
+$("btn-copy-log").addEventListener("click", async () => {
+  if (!logLinesRaw) return;
+  try { await navigator.clipboard.writeText(logLinesRaw); } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = logLinesRaw;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e2) {}
+    ta.remove();
+  }
+  $("btn-copy-log").textContent = "已复制";
+  setTimeout(() => { $("btn-copy-log").textContent = "复制"; }, 1200);
+});
+$("btn-download-log").addEventListener("click", () => {
+  const blob = new Blob([logLinesRaw || ""], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "core.log";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+});
 
 /* ---------------- onboarding ---------------- */
 
@@ -967,14 +1170,369 @@ $("onb-next").addEventListener("click", () => {
   else finishOnboarding();
 });
 
+/* ---------------- shell plugins (外壳插件) ---------------- */
+
+const shellPageHooks = {};
+
+/* ShellPlugin API：外壳插件在 main.js 中调用这些接口挂载
+   页面 / 卡片 / 按钮，参考核心的插件模式。 */
+window.ShellPlugin = {
+  version: 1,
+
+  registerPage(cfg) {
+    if (!cfg || !cfg.id || typeof cfg.html !== "string") {
+      return console.error("[ShellPlugin] registerPage 参数不完整", cfg);
+    }
+    const id = String(cfg.id);
+    if (uiPages.includes(id)) return console.error("[ShellPlugin] 页面 id 冲突: " + id);
+    const btn = document.createElement("button");
+    btn.className = "nav-item";
+    btn.dataset.page = id;
+    btn.innerHTML = `<span class="nav-icon">${esc(cfg.icon || "◇")}</span>${esc(cfg.title || id)}`;
+    document.querySelector(".nav").appendChild(btn);
+    btn.addEventListener("click", () => showPage(id));
+    const sec = document.createElement("section");
+    sec.className = "page hidden";
+    sec.id = "page-" + id;
+    sec.innerHTML = `<div class="page-head"><h1>${esc(cfg.title || id)}</h1></div>` + cfg.html;
+    document.querySelector(".content").appendChild(sec);
+    uiPages.push(id);
+    if (typeof cfg.onShow === "function") shellPageHooks[id] = cfg.onShow;
+    ShellPlugin.log("已注册页面: " + id);
+    return sec;
+  },
+
+  registerCard(cfg) {
+    if (!cfg || !cfg.pageId) return console.error("[ShellPlugin] registerCard 需要 pageId");
+    const page = document.getElementById("page-" + cfg.pageId);
+    if (!page) return console.error("[ShellPlugin] 页面不存在: " + cfg.pageId);
+    const card = document.createElement("div");
+    card.className = "card shell-plugin-card";
+    if (cfg.id) card.id = "shell-card-" + cfg.id;
+    card.innerHTML = (cfg.title ? `<h2>${esc(cfg.title)}</h2>` : "") + (cfg.html || "");
+    page.appendChild(card);
+    if (typeof cfg.onMount === "function") {
+      try { cfg.onMount(card); } catch (e) { console.error("[ShellPlugin] onMount 失败", e); }
+    }
+    ShellPlugin.log(`已注册卡片: ${cfg.pageId} / ${cfg.id || ""}`);
+    return card;
+  },
+
+  registerAction(cfg) {
+    if (!cfg || !cfg.pageId) return console.error("[ShellPlugin] registerAction 需要 pageId");
+    const head = document.querySelector("#page-" + cfg.pageId + " .head-actions");
+    if (!head) return console.error("[ShellPlugin] 页面无按钮区: " + cfg.pageId);
+    const b = document.createElement("button");
+    b.className = "btn ghost";
+    if (cfg.id) b.id = "shell-action-" + cfg.id;
+    b.textContent = cfg.label || cfg.id || "插件按钮";
+    b.addEventListener("click", ev => {
+      try { cfg.onClick(ev); } catch (e) { console.error("[ShellPlugin] onClick 失败", e); }
+    });
+    head.appendChild(b);
+    return b;
+  },
+
+  on(evt, fn) {
+    if (typeof fn !== "function") return;
+    (window.__shellHandlers = window.__shellHandlers || {});
+    (window.__shellHandlers[evt] = window.__shellHandlers[evt] || []).push(fn);
+  },
+
+  emit(evt, data) {
+    const list = (window.__shellHandlers || {})[evt] || [];
+    list.forEach(fn => { try { fn(data); } catch (e) { console.error(e); } });
+  },
+
+  callApi(method, payload) { return callApi(method, payload); },
+  log(...args) { console.log("[ShellPlugin]", ...args); },
+
+  registerTheme(cfg) {
+    if (!cfg || !cfg.id || !cfg.name || !cfg.css) {
+      return console.error("[ShellPlugin] registerTheme 参数不完整（需要 id/name/css）");
+    }
+    if (shellThemes.some(t => t.id === cfg.id)) {
+      return console.error("[ShellPlugin] 主题 id 冲突: " + cfg.id);
+    }
+    shellThemes.push({ id: String(cfg.id), name: String(cfg.name), builtin: false, css: String(cfg.css) });
+    ShellPlugin.log("已注册外观: " + cfg.id);
+  },
+};
+
+/* ---------------- shell plugins: 桌宠接口（预留） ---------------- */
+
+const shellPets = {};
+
+function makeDraggable(el) {
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+  el.addEventListener("mousedown", e => {
+    dragging = true;
+    sx = e.clientX; sy = e.clientY;
+    const r = el.getBoundingClientRect();
+    ox = r.left; oy = r.top;
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", e => {
+    if (!dragging || !el.parentElement) return;
+    const layer = el.parentElement.getBoundingClientRect();
+    el.style.left = Math.max(0, Math.min(layer.width - 60, ox + e.clientX - sx - layer.left)) + "px";
+    el.style.top = Math.max(0, Math.min(layer.height - 60, oy + e.clientY - sy - layer.top)) + "px";
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+}
+
+/* 桌宠插件接口：全窗口透明挂载层（#shell-pet-layer，pointer-events:none），
+   宠物元素自身 pointer-events:auto；支持拖拽与生命周期回调。 */
+window.ShellPlugin.registerPet = function (cfg) {
+  if (!cfg || !cfg.id) return console.error("[ShellPlugin] registerPet 需要 id");
+  const layer = document.getElementById("shell-pet-layer");
+  if (!layer) return console.error("[ShellPlugin] 桌宠挂载层缺失");
+  if (shellPets[cfg.id]) return shellPets[cfg.id].el;
+  const el = document.createElement("div");
+  el.className = "shell-pet";
+  el.style.left = cfg.x || "auto";
+  el.style.top = cfg.y || "auto";
+  el.innerHTML = cfg.html || "";
+  layer.appendChild(el);
+  if (cfg.draggable) makeDraggable(el);
+  if (typeof cfg.onMount === "function") {
+    try { cfg.onMount(el); } catch (e) { console.error("[ShellPlugin] 桌宠 onMount 失败", e); }
+  }
+  shellPets[cfg.id] = { el, cfg };
+  ShellPlugin.log("桌宠已挂载: " + cfg.id);
+  return el;
+};
+
+window.ShellPlugin.unregisterPet = function (id) {
+  const p = shellPets[id];
+  if (!p) return;
+  try { if (typeof p.cfg.onDestroy === "function") p.cfg.onDestroy(); } catch (e) { console.error(e); }
+  p.el.remove();
+  delete shellPets[id];
+};
+
+window.ShellPlugin.getPetLayer = function () {
+  return document.getElementById("shell-pet-layer");
+};
+
+/* ---------------- 外观系统（主题） ---------------- */
+
+const shellThemes = [
+  { id: "builtin-midnight", name: "深邃黑（默认）", builtin: true, css: "" },
+  { id: "builtin-ocean", name: "深海蓝青", builtin: true, css: "themes/ocean.css" },
+  { id: "builtin-sunset", name: "暖橙霞光", builtin: true, css: "themes/sunset.css" },
+  { id: "builtin-forest", name: "森林绿", builtin: true, css: "themes/forest.css" },
+  { id: "builtin-light", name: "浅色", builtin: true, css: "themes/light.css" },
+];
+let currentTheme = "builtin-midnight";
+
+async function applyTheme(id, persist) {
+  const theme = shellThemes.find(t => t.id === id) || shellThemes[0];
+  let styleEl = document.getElementById("shell-theme");
+  if (theme.css) {
+    let text = theme.css;
+    if (/^(https?:)?\/\//.test(text) || text.startsWith("/")) {
+      try {
+        const resp = await fetch(text);
+        if (resp.ok) text = await resp.text();
+        else throw new Error("HTTP " + resp.status);
+      } catch (e) {
+        console.error("[Theme] 加载失败: " + theme.css, e);
+        text = "";
+      }
+    }
+    if (text) {
+      if (!styleEl) {
+        styleEl = document.createElement("style");
+        styleEl.id = "shell-theme";
+        document.head.appendChild(styleEl);
+      }
+      styleEl.textContent = text;
+    }
+  } else if (styleEl) {
+    styleEl.remove();
+  }
+  currentTheme = theme.id;
+  if (persist !== false) {
+    callApi("set_ui_state", { theme: theme.id }).catch(() => {});
+  }
+  renderThemeList();
+}
+
+function renderThemeList() {
+  const box = $("themes-list");
+  if (!box) return;
+  box.innerHTML = shellThemes.map(t => `
+    <button type="button" class="theme-chip ${t.id === currentTheme ? "on" : ""}" data-theme="${esc(t.id)}"
+            title="${esc(t.name)}${t.builtin ? "" : "（插件外观）"}">
+      <span class="theme-swatch" data-theme-id="${esc(t.id)}"></span>
+      <span class="theme-name">${esc(t.name)}</span>
+    </button>`).join("");
+  box.querySelectorAll("[data-theme]").forEach(b =>
+    b.addEventListener("click", () => applyTheme(b.dataset.theme)));
+}
+
+/* 启动时拉取已启用插件清单并注入脚本；插件脚本随后自行 register*。 */
+async function loadShellPlugins() {
+  try {
+    const manifest = await callApi("get_shell_plugin_manifest");
+    const list = (manifest && manifest.plugins) || [];
+    for (const p of list) {
+      await new Promise(resolve => {
+        const s = document.createElement("script");
+        s.src = p.entry;
+        s.onload = resolve;
+        s.onerror = () => { console.error("[ShellPlugin] 加载失败: " + p.id); resolve(); };
+        document.head.appendChild(s);
+      });
+    }
+    if (list.length) {
+      ShellPlugin.log(`已加载 ${list.length} 个外壳插件: ${list.map(p => p.id).join(", ")}`);
+    }
+  } catch (e) {
+    console.error("[ShellPlugin] 清单加载失败", e);
+  }
+}
+
+/* ---------------- shell plugins: 管理界面 ---------------- */
+
+let shellPluginPicked = "";
+
+async function refreshShellPlugins() {
+  const box = $("shell-plugin-list");
+  if (!box) return;
+  const data = await callApi("list_shell_plugins");
+  const list = (data && data.plugins) || [];
+  if (!list.length) {
+    box.innerHTML = `<div class="plugin-empty">暂无外壳插件（随应用内置或从 zip 导入）</div>`;
+    return;
+  }
+  box.innerHTML = list.map(p => `
+    <div class="plugin-row">
+      <div class="plugin-info">
+        <div class="plugin-name">${esc(p.name)}
+          <span class="tag ${p.builtin ? "builtin" : "plain"}">${p.builtin ? "内置" : "用户"}</span>
+          ${p.valid ? "" : '<span class="tag miss">无效</span>'}
+          ${p.enabled ? '<span class="tag bundle">已启用</span>' : '<span class="tag miss">已停用</span>'}
+        </div>
+        <div class="plugin-meta">${esc(p.id)}${p.version ? " · v" + esc(p.version) : ""} · ${esc(p.description)}</div>
+      </div>
+      <div class="plugin-actions">
+        <button class="btn small" data-sp="${esc(p.id)}" data-enable="${p.enabled ? "0" : "1"}">${p.enabled ? "停用" : "启用"}</button>
+        ${p.builtin ? "" : `<button class="btn small danger" data-sp-remove="${esc(p.id)}">卸载</button>`}
+      </div>
+    </div>`).join("");
+  box.querySelectorAll("[data-sp]").forEach(b => b.addEventListener("click", async () => {
+    const r = await callApi("set_shell_plugin_enabled", { id: b.dataset.sp, enabled: b.dataset.enable === "1" });
+    showBannerEl($("plugin-banner"), r.ok ? "ok" : "err", r.message);
+    refreshShellPlugins();
+  }));
+  box.querySelectorAll("[data-sp-remove]").forEach(b => b.addEventListener("click", async () => {
+    if (!confirm("卸载该外壳插件？")) return;
+    const r = await callApi("remove_shell_plugin", { id: b.dataset.spRemove });
+    showBannerEl($("plugin-banner"), r.ok ? "ok" : "err", r.message);
+    refreshShellPlugins();
+  }));
+}
+
+$("btn-refresh-shell-plugins").addEventListener("click", refreshShellPlugins);
+$("btn-pick-shell-plugin").addEventListener("click", async () => {
+  const r = await callApi("pick_shell_plugin_file");
+  if (r && r.path) {
+    shellPluginPicked = r.path;
+    $("shell-plugin-file-label").textContent = r.path;
+    $("btn-import-shell-plugin").disabled = false;
+  }
+});
+$("btn-import-shell-plugin").addEventListener("click", async () => {
+  if (!shellPluginPicked) return;
+  const r = await callApi("import_shell_plugin", { path: shellPluginPicked });
+  showBannerEl($("plugin-banner"), r.ok ? "ok" : "err", r.message);
+  shellPluginPicked = "";
+  $("shell-plugin-file-label").textContent = "未选择文件";
+  $("btn-import-shell-plugin").disabled = true;
+  refreshShellPlugins();
+});
+
+/* ---------------- shell plugins: 提示词生成（创造模式开发流） ---------------- */
+
+function buildShellPluginPrompt(idea) {
+  idea = (idea || "").trim() || "（未填写，请 agent 先与我确认插件想法）";
+  return [
+    "# 任务：为 DeepSeek Harness for Windows 桌面外壳开发一个外壳插件",
+    "",
+    "## 背景",
+    "外壳（pywebview 桌面窗口）是 DeepSeek Harness（dsh）的 Windows 封装；外壳 UI 为纯 HTML/CSS/JS。",
+    "外壳插件 = zip 包（plugin.json + main.js + 可选静态资源），扩展外壳界面：新页面 / 卡片 / 头部按钮。",
+    "",
+    "## 插件想法",
+    idea,
+    "",
+    "## 插件规范（ShellPlugin API v1）",
+    "- plugin.json 字段：",
+    '  {"id":"my-plugin","name":"显示名","version":"0.1.0","description":"一句话说明","entry":"main.js"}',
+    "  id 仅限字母数字 ._- 且不超过 64 字符。",
+    "- main.js 在 window.ShellPlugin 上注册（脚本在外壳页面加载后注入执行）：",
+    "  * registerPage({id,title,icon,html,onShow}) 新增左侧导航页面；",
+    "  * registerCard({pageId,id,title,html,onMount}) 在既有页面追加卡片（pageId 可选：workspace/plugins/settings/update/logs/about）；",
+    "  * registerAction({pageId,id,label,onClick}) 在页面头部追加按钮；",
+    "  * on(evt,fn)/emit(evt,data) 事件总线；callApi(method,payload) 调用外壳桥；log(...) 日志。",
+    "- 桥方法参考：get_state / list_plugins / list_shell_plugins / start_server / stop_server / read_log 等。",
+    "",
+    "## 约束",
+    "- 纯 HTML/CSS/JS，不依赖构建工具；CSS 优先使用外壳 CSS 变量（--bg/--panel/--fg/--accent/--warn）。",
+    "- 不要向公网发起请求；需要数据时通过 callApi 走外壳桥。",
+    "- 不得覆盖 window.ShellPlugin。",
+    "",
+    "## 交付",
+    "- 输出一个 zip（内含 plugin.json + main.js），并给出「外壳 → 插件 → 导入外壳插件」的验证步骤；",
+    "- 若插件需要与 dsh 核心联动（壳内外联动），同时给出核心侧配套说明（dsh 插件或 API 端点）。",
+    "",
+    "## 开发方式",
+    "- 请使用创造模式开发；先输出插件结构与 API 调用方案，再给完整代码。",
+  ].join("\n");
+}
+
+$("btn-gen-plugin-prompt").addEventListener("click", () => {
+  $("plugin-prompt").value = buildShellPluginPrompt($("plugin-idea").value);
+  $("btn-copy-plugin-prompt").disabled = false;
+});
+
+$("btn-copy-plugin-prompt").addEventListener("click", async () => {
+  const ta = $("plugin-prompt");
+  if (!ta.value) return;
+  let ok = false;
+  try { ok = await navigator.clipboard.writeText(ta.value); } catch (e) { ok = false; }
+  if (!ok) {
+    ta.select();
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  }
+  $("btn-copy-plugin-prompt").textContent = ok ? "已复制" : "复制失败";
+  setTimeout(() => { $("btn-copy-plugin-prompt").textContent = "复制"; }, 1500);
+});
+
 /* ---------------- boot ---------------- */
 
 (async function init() {
   await waitBridgeReady();
+  await loadShellPlugins();
+  const bootState = await refreshState();
+  const savedTheme = bootState.app.uiState && bootState.app.uiState.theme;
+  if (savedTheme) await applyTheme(savedTheme, false);
+  if (bootState.app.uiState && bootState.app.uiState.lang) {
+    window.__i18nLang = bootState.app.uiState.lang;
+    if (typeof applyI18n === "function") applyI18n();
+  }
   await loadSettings();
   const state = await refreshState();
   if (!state.app.onboardingDone) showOnboarding(true);
   if (state.server.running) {
+    // 恢复上次的沉浸状态；iframe 已加载时不重载，仅切换外壳布局
     openFrame($("dsh-frame"), state.server.url);
+    const wantImmersive = !!(state.app.uiState && state.app.uiState.immersive);
+    setImmersive(wantImmersive, false);
+    if (!wantImmersive) showPage("workspace");
   }
+  // 托盘命令轮询：托盘菜单/点击经 Python 队列，由桥线程执行窗口操作
+  setInterval(() => callApi("poll_tray").catch(() => {}), 800);
 })();

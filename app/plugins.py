@@ -212,19 +212,27 @@ class PluginManager:
             if self._core.is_running():
                 self._core.stop()
         node_dir = self._core.runtime_dir
+        bundled = os.path.isfile(os.path.join(
+            self._app_dir, self._cfg.get("runtime_dir", "runtime"), "node.exe"))
         # Keep the profile compatible with the @linxin666/dsh-web plugin
         # family (hoisted linker, allowBuilds, release-age exclusion) and
         # make the dsh CLI findable for plugins that spawn it themselves.
         data = homes.data_dir(self._app_dir, self._cfg)
         home = os.environ.get("DSH_HOME") or homes.dsh_home(data)
         homes.ensure_profile_workspace(home)
-        homes.ensure_dsh_shim(node_dir, self._core.bin_js)
+        if bundled:
+            homes.ensure_dsh_shim(node_dir, self._core.bin_js)
         cmd = [self._core.node_exe, self._core.bin_js, "plugin",
                "--profile", PROFILE, *args]
         env = dict(os.environ)
-        env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+        paths = [node_dir] if os.path.isdir(node_dir) else []
+        paths.extend(homes.git_path_entries(node_dir))
+        if paths:
+            env["PATH"] = os.pathsep.join(paths) + os.pathsep + env.get("PATH", "")
         env["DSH_HOME"] = home
-        env.update(homes.pnpm_env(data, node_dir))
+        env.update(homes.pnpm_env(data, node_dir if bundled else data))
+        env.update(homes.proxy_env(self._cfg))
+        env.update(homes.registry_env(self._cfg))
         log.info("plugin run: %s", " ".join(cmd))
         worker = threading.Thread(
             target=self._run_worker, args=(cmd, env, phase), daemon=True)

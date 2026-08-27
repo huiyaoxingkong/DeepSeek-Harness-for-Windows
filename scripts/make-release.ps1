@@ -1,17 +1,20 @@
-# Release builder: 7-Zip self-extracting Setup + in-place Update packages.
+﻿# Release builder: 7-Zip self-extracting Setup + in-place Update packages.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.2 -SkipBuild
+#   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.3 -SkipBuild
+#   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.3 -Flavor Minimal -SkipBuild
 #
 # Products written to release\:
-#   DeepSeekHarness-<ver>-Setup.exe    first install (prompts for a directory)
-#   DeepSeekHarness-<ver>-Update.exe   silent in-place upgrade (InstallPath=".")
-#   <exe>.sha256 / SHA256SUMS-<ver>.txt
+#   DeepSeekHarness-<ver>-Setup.exe          first install (Lazy default name)
+#   DeepSeekHarness-<ver>-Minimal-Setup.exe  Minimal flavor (no bundled runtimes)
+#   <exe>.sha256 / SHA256SUMS-<ver>[-Minimal].txt
 param(
-    [string]$Version = "1.0.2",
+    [string]$Version = "1.0.3",
+    [ValidateSet("Lazy", "Minimal")]
+    [string]$Flavor = "Lazy",
     [switch]$SkipBuild,
-    [int]$Level = 7
+    [int]$Level = 9
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,15 +35,17 @@ New-Item -ItemType Directory -Path $release -Force | Out-Null
 
 if (-not $SkipBuild) {
     Write-Host "=== Building app ($Version) ===" -ForegroundColor Cyan
-    & (Join-Path $root "build.ps1") -Version $Version
+    & (Join-Path $root "build.ps1") -Version $Version -Flavor $Flavor
     if (-not $?) { throw "build.ps1 failed" }
 }
 if (-not (Test-Path (Join-Path $dist "DeepSeek Harness.exe"))) {
     throw "dist app missing; run build.ps1 first"
 }
 
-$setupExe = Join-Path $release "DeepSeekHarness-$Version-Setup.exe"
-$updateExe = Join-Path $release "DeepSeekHarness-$Version-Update.exe"
+$flavorSuffix = if ($Flavor -eq "Minimal") { "-Minimal" } else { "" }
+$flavorLabel = if ($Flavor -eq "Minimal") { "极简包" } else { "懒人包" }
+$setupExe = Join-Path $release "DeepSeekHarness-$Version$flavorSuffix-Setup.exe"
+$updateExe = Join-Path $release "DeepSeekHarness-$Version$flavorSuffix-Update.exe"
 
 function Write-Utf8NoBom([string]$path, [string]$text) {
     $enc = New-Object System.Text.UTF8Encoding($false)
@@ -68,7 +73,7 @@ New-Item -ItemType Directory -Path $workTmp -Force | Out-Null
 $setupCfg = Join-Path $workTmp "dsh-setup-$Version-cfg.txt"
 Write-Utf8NoBom $setupCfg @"
 ;!@Install@!UTF-8!
-Title="DeepSeek Harness $Version 安装"
+Title="DeepSeek Harness $Version $flavorLabel 安装"
 BeginPrompt="将 DeepSeek Harness $Version 解压安装到以下目录？"
 InstallPath="C:\DeepSeek Harness"
 ExecuteFile="post-install.bat"
@@ -131,7 +136,7 @@ foreach ($exe in $setupExe, $updateExe) {
     [System.IO.File]::WriteAllText("$exe.sha256", "$hash  $name`r`n",
         (New-Object System.Text.UTF8Encoding($false)))
 }
-$sumsPath = Join-Path $release "SHA256SUMS-$Version.txt"
+$sumsPath = Join-Path $release "SHA256SUMS-$Version$flavorSuffix.txt"
 [System.IO.File]::WriteAllLines($sumsPath, $sums,
     (New-Object System.Text.UTF8Encoding($false)))
 

@@ -187,6 +187,30 @@ def _remove_tree(path: str) -> bool:
     return not os.path.exists(path)
 
 
+# Files written by pre-1.0.2 installers whose Chinese names were decoded
+# with the wrong codepage (UTF-8 name bytes read as GBK on Chinese Windows);
+# safe to delete — the corrected scripts ship under app\assets since 1.0.3.
+_GARBLED_LEGACY = (
+    "鍋滄 DeepSeek Harness.bat",  # 停止
+    "鍚姩 DeepSeek Harness.bat",  # 启动
+)
+
+
+def cleanup_legacy_garbled_files(app_dir: str) -> int:
+    """Remove mojibake-named legacy helper bats left by older installers."""
+    removed = 0
+    for name in _GARBLED_LEGACY:
+        path = os.path.join(app_dir, name)
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+                removed += 1
+                log.info("removed legacy garbled file: %s", name)
+            except OSError as exc:
+                log.warning("failed to remove garbled file %s: %s", name, exc)
+    return removed
+
+
 # ------------------------------------------------------------- healing
 
 
@@ -334,3 +358,138 @@ def pnpm_env(data: str, runtime_dir: str) -> dict:
         "npm_config_cache_dir": os.path.join(data, ".pnpm-cache"),
         "COREPACK_HOME": os.path.join(runtime_dir, ".corepack"),
     }
+
+
+_TOOLS_CACHE: dict[str, dict] = {}
+
+
+def detect_tools(app_dir: str, cfg) -> dict:
+    """Locate the runtimes the shell, core and plugins need.
+
+    Lazy package: bundled portable Node + Git under ``<app>\\runtime``.
+    Minimal package: no bundled runtimes — system Node/Git/Bash are used
+    and missing pieces degrade gracefully (documented tradeoff).
+
+    Results are cached per app_dir: runtimes do not change while the app is
+    running, and get_state() calls this on every poll.
+    """
+    cached = _TOOLS_CACHE.get(app_dir)
+    if cached is not None:
+        return cached
+    runtime_dir = os.path.join(app_dir, cfg.get("runtime_dir", "runtime"))
+    bundled_node = os.path.join(runtime_dir, "node.exe")
+    bundled_git = os.path.join(runtime_dir, "git", "cmd", "git.exe")
+    bundled_bash = os.path.join(runtime_dir, "git", "bin", "bash.exe")
+
+    def locate(bundled: str, tool: str) -> dict:
+        if os.path.isfile(bundled):
+            return {"mode": "bundled", "path": bundled}
+        found = shutil.which(tool)
+        if found:
+            return {"mode": "system", "path": found}
+        return {"mode": "missing", "path": ""}
+
+    def locate_bash() -> dict:
+        # Prefer the bash shipped next to git (Git Bash), not the WSL stub
+        # that `bash` resolves to on Windows.
+        if os.path.isfile(bundled_bash):
+            return {"mode": "bundled", "path": bundled_bash}
+        git = locate(bundled_git, "git")
+        if git["path"]:
+            cand = os.path.join(os.path.dirname(os.path.dirname(git["path"])),
+                                "bin", "bash.exe")
+            if os.path.isfile(cand):
+                return {"mode": "system", "path": cand}
+        found = shutil.which("bash")
+        if found:
+            return {"mode": "system", "path": found}
+        return {"mode": "missing", "path": ""}
+
+    minimal = not os.path.isfile(bundled_node)
+    result = {
+        "flavor": "minimal" if minimal else "lazy",
+        "node": locate(bundled_node, "node"),
+        "git": locate(bundled_git, "git"),
+        "bash": locate_bash(),
+    }
+    _TOOLS_CACHE[app_dir] = result
+    return result
+
+
+def git_path_entries(runtime_dir: str) -> list[str]:
+    """Bundled-Git dirs to prepend to child PATH (cmd: git.exe, bin: bash)."""
+    entries = []
+    for sub in ("git\\cmd", "git\\bin", "git\\usr\\bin", "git\\mingw64\\bin"):
+        path = os.path.join(runtime_dir, sub)
+        if os.path.isdir(path):
+            entries.append(path)
+    return entries
+
+
+def proxy_env(cfg) -> dict:
+    """HTTP(S)_PROXY overrides when the user configured a proxy (D4)."""
+    url = (cfg.get("proxy_url") or "").strip()
+    if not url:
+        return {}
+    return {"HTTP_PROXY": url, "HTTPS_PROXY": url,
+            "http_proxy": url, "https_proxy": url}
+
+
+def registry_env(cfg) -> dict:
+    """npm registry override (B3) — honored by pnpm and npm alike."""
+    reg = (cfg.get("npm_registry") or "").strip()
+    if not reg:
+        return {}
+    return {"npm_config_registry": reg}
+
+
+def run_health_check(app_dir: str, cfg, node_exe: str, bin_js: str) -> None:
+    """A6: post-migration/upgrade verification.
+
+    When a web profile exists, run ``dsh --profile web --dump-config`` against
+    the instance DSH_HOME and record the outcome to ``logs\\health.json``.
+    A non-zero exit or a crash surfaces here and in the launcher log instead
+    of failing silently at the next server start.
+    """
+    import subprocess
+    import time as _time
+
+    home = os.environ.get("DSH_HOME") or dsh_home(data_dir(app_dir, cfg))
+    profile = os.path.join(home, "profiles", "web")
+    ts = _time.strftime("%Y-%m-%d %H:%M:%S")
+    result: dict = {"ok": False, "skipped": True, "ts": ts}
+    if (os.path.isdir(profile) and os.path.isfile(node_exe)
+            and os.path.isfile(bin_js)):
+        env = dict(os.environ)
+        env["DSH_HOME"] = home
+        try:
+            proc = subprocess.run(
+                [node_exe, bin_js, "--profile", "web", "--dump-config"],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=60, env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            result = {
+                "ok": proc.returncode == 0, "skipped": False,
+                "exit": proc.returncode, "ts": ts,
+                "tail": (proc.stderr or proc.stdout or "")[-400:],
+            }
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            result = {"ok": False, "skipped": False, "ts": ts, "error": str(exc)}
+    path = os.path.join(app_dir, "logs", "health.json")
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(result, fh, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        log.warning("health.json write failed: %s", exc)
+    log.info("post-migration health check: %s", result)
+
+
+def read_health(app_dir: str) -> dict:
+    try:
+        with open(os.path.join(app_dir, "logs", "health.json"),
+                  "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}

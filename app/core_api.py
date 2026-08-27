@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import socket
 import subprocess
 import threading
 import time
 
+import crypto
 import homes
 
 log = logging.getLogger("core_api")
@@ -36,7 +38,12 @@ class CoreController:
 
     @property
     def node_exe(self) -> str:
-        return os.path.join(self._app_dir, self._cfg.get("runtime_dir", "runtime"), "node.exe")
+        bundled = os.path.join(self._app_dir,
+                               self._cfg.get("runtime_dir", "runtime"), "node.exe")
+        if os.path.isfile(bundled):
+            return bundled
+        # Minimal package: fall back to a system Node.js installation.
+        return shutil.which("node") or bundled
 
     @property
     def runtime_dir(self) -> str:
@@ -79,10 +86,15 @@ class CoreController:
         with self._lock:
             if self._proc is not None and self._proc.poll() is None:
                 return True, "server is already running"
-            if not self.core_ready():
+            if not os.path.isfile(self.bin_js):
                 return False, (
                     "核心尚未构建。请先在“更新”页面构建/更新核心，"
                     "或在构建目录运行 build.ps1。"
+                )
+            if not os.path.isfile(self.node_exe):
+                return False, (
+                    "未找到 Node.js。当前为极简包：请自行安装 Node.js LTS "
+                    "（nodejs.org）并加入 PATH，或改用懒人包（内置 Node）。"
                 )
             port = self._pick_port()
             env = dict(os.environ)
@@ -91,13 +103,28 @@ class CoreController:
             # it spawns (plugin CLIs, pnpm) inherit this.
             data = homes.data_dir(self._app_dir, self._cfg)
             env["DSH_HOME"] = homes.dsh_home(data)
-            env.update(homes.pnpm_env(data, self.runtime_dir))
+            bundled = os.path.isfile(os.path.join(
+                self._app_dir, self._cfg.get("runtime_dir", "runtime"), "node.exe"))
+            # Minimal package: keep corepack writes inside the instance
+            # instead of the (likely read-only) system node dir.
+            env.update(homes.pnpm_env(data, self.runtime_dir if bundled else data))
             # Make node/pnpm/dsh shim resolvable for plugins that spawn the
-            # CLI themselves (dsh-doctor, dsh-plugin-manager, remote-web-ui).
-            env["PATH"] = self.runtime_dir + os.pathsep + env.get("PATH", "")
-            api_key = self._cfg.get("api_key") or ""
+            # CLI themselves (dsh-doctor, dsh-plugin-manager, remote-web-ui),
+            # and expose bundled Git (git.exe + Git Bash) on PATH.
+            paths = []
+            if os.path.isdir(self.runtime_dir):
+                paths.append(self.runtime_dir)
+            paths.extend(homes.git_path_entries(self.runtime_dir))
+            if paths:
+                env["PATH"] = os.pathsep.join(paths) + os.pathsep + env.get("PATH", "")
+            try:
+                api_key = crypto.unprotect(self._cfg.get("api_key") or "")
+            except (OSError, ValueError):
+                api_key = ""
             if api_key:
                 env["DEEPSEEK_API_KEY"] = api_key
+            env.update(homes.proxy_env(self._cfg))
+            env.update(homes.registry_env(self._cfg))
             base_url = self._cfg.get("base_url") or ""
             if base_url:
                 env["DEEPSEEK_BASE_URL"] = base_url

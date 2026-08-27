@@ -154,6 +154,10 @@
               <button id="btn-install-plugin" class="btn primary" style="flex:0 0 auto;">安装</button>
             </div>
             <div class="hint">支持 npm 包、git 地址、本地路径；安装前会自动停止服务器，安装完成后需重启服务器生效。</div>
+            <div class="hint" style="margin-top:8px;">
+              常用预设：
+              <button id="preset-web-all" class="btn small ghost" type="button" title="一键填入 dsh-web 全家桶聚合包">dsh-web 全家桶（19 插件聚合包）</button>
+            </div>
           </div>
         </div>
 
@@ -167,6 +171,42 @@
         <div class="card" id="plugin-output-card" hidden>
           <h2>操作输出</h2>
           <pre id="plugin-output" class="log-view" style="height: 220px;"></pre>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <h2>外壳插件 <button id="btn-refresh-shell-plugins" class="btn small ghost" type="button" style="float:right;">刷新</button></h2>
+          <div id="shell-plugin-list" class="plugin-list">
+            <div class="plugin-empty">加载中…</div>
+          </div>
+          <div class="field" style="margin-top:10px;">
+            <div class="key-row" style="max-width:none;">
+              <button id="btn-pick-shell-plugin" class="btn ghost" style="flex:0 0 auto;">导入外壳插件（本地 zip）…</button>
+              <span id="shell-plugin-file-label" class="hint" style="align-self:center;">未选择文件</span>
+              <button id="btn-import-shell-plugin" class="btn primary" style="flex:0 0 auto;" disabled>导入安装</button>
+            </div>
+            <div class="hint">外壳插件扩展桌面外壳界面本身（新页面 / 卡片 / 按钮），参考核心的插件模式，
+              与 dsh 核心插件相互独立；修改后重启应用生效。</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+          <h2>生成插件提示词（创造模式开发流）</h2>
+          <div class="field">
+            <label for="plugin-idea">插件想法</label>
+            <input id="plugin-idea" type="text" placeholder="例如：一个显示系统时间与内存占用的面板卡片" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="plugin-prompt">生成的提示词</label>
+            <textarea id="plugin-prompt" rows="12" readonly spellcheck="false"></textarea>
+          </div>
+          <div class="key-row">
+            <button id="btn-gen-plugin-prompt" class="btn primary" type="button">生成提示词</button>
+            <button id="btn-copy-plugin-prompt" class="btn ghost" type="button" disabled>复制</button>
+          </div>
+          <div class="hint" style="margin-top:8px;">
+            把提示词粘贴到工作台的另一个新对话（同工作区）中，用创造模式让 agent 开发插件；
+            产出 zip 后回到上方「导入外壳插件」安装验证。
+          </div>
         </div>
       </section>
 
@@ -224,6 +264,64 @@
             <input id="open-browser" type="checkbox">
             <span>启动服务器后同时打开系统浏览器</span>
           </label>
+          <label class="check">
+            <input id="close-to-tray" type="checkbox">
+            <span>关闭窗口时最小化到系统托盘（后台运行）</span>
+          </label>
+          <label class="check">
+            <input id="auto-launch" type="checkbox">
+            <span>开机自动启动 DeepSeek Harness</span>
+          </label>
+        </div>
+
+        <div class="card">
+          <h2>网络与镜像（可选）</h2>
+          <div class="field">
+            <label for="proxy-url">HTTP 代理</label>
+            <input id="proxy-url" type="text" placeholder="http://127.0.0.1:7890（留空 = 不使用代理）">
+          </div>
+          <div class="field">
+            <label for="npm-registry">npm registry 镜像</label>
+            <input id="npm-registry" type="text" placeholder="https://registry.npmmirror.com（留空 = 官方源）">
+          </div>
+          <div class="field">
+            <label for="github-mirror">GitHub 下载镜像前缀</label>
+            <input id="github-mirror" type="text" placeholder="https://gh-proxy.com（留空 = 直连 GitHub）">
+          </div>
+          <div class="hint">作用于核心更新 / 应用更新 / 插件安装的下载流量，保存后生效。</div>
+        </div>
+        <div class="card">
+          <h2>外观</h2>
+          <div id="themes-list" class="themes-list">
+            <div class="plugin-empty">加载中…</div>
+          </div>
+          <div class="hint" style="margin-top:10px;">
+            内置多组外观，点击即时切换并自动记忆；外壳插件可通过
+            <code>ShellPlugin.registerTheme</code> 提供更多外观（插件外观）。
+          </div>
+          <div class="field" style="margin-top:12px;">
+            <label>界面语言</label>
+            <select id="lang-select" style="max-width:220px;">
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>运行环境</h2>
+          <div id="tools-list">
+            <div class="plugin-empty">加载中…</div>
+          </div>
+          <div class="hint" style="margin-top:10px;">
+            懒人包内置 Node.js 与便携 Git（git + Git Bash）；极简包不内置运行时，
+            需自行安装对应工具，缺失项对应的插件功能会优雅降级（git 图形 / bash 工具等）。
+          </div>
+        </div>
+        <div class="card">
+          <h2>本机实例</h2>
+          <div id="instances-list"><div class="plugin-empty">加载中…</div></div>
+          <div class="hint" style="margin-top:10px;">同机多实例互不影响（数据/端口隔离）；上方列表显示本机正在运行的 DeepSeek Harness 进程及其监听端口。</div>
         </div>
         <div class="save-toast" id="save-toast">已保存</div>
       </section>
@@ -251,6 +349,20 @@
             <div class="kv-row"><span>远程最新提交</span><b id="remote-commit">-</b></div>
             <div class="kv-row"><span>提交时间</span><b id="remote-date">-</b></div>
             <div class="kv-row"><span>提交说明</span><b id="remote-message" class="ellipsis">-</b></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>选择版本更新（升级 / 回退）</h2>
+          <div class="field">
+            <div class="key-row" style="max-width:none;">
+              <select id="core-release-select" style="flex:1; max-width:460px;">
+                <option value="">跟随 master（最新开发版）</option>
+              </select>
+              <button id="btn-refresh-releases" class="btn ghost" style="flex:0 0 auto;">刷新列表</button>
+              <button id="btn-update-tag" class="btn primary" style="flex:0 0 auto;">更新到所选版本</button>
+            </div>
+            <div class="hint">选择上游发布版本（tag）构建切换，可用于升级或**回退**到任意已发布版本；留空 = 跟随 master。</div>
           </div>
         </div>
 
@@ -285,7 +397,16 @@
       <section class="page hidden" id="page-logs">
         <div class="page-head">
           <h1>核心日志</h1>
-          <button id="btn-refresh-log" class="btn ghost">刷新</button>
+          <div class="head-actions">
+            <input id="log-filter" type="text" placeholder="过滤关键词…" style="width:150px;">
+            <button id="btn-copy-log" class="btn ghost">复制</button>
+            <button id="btn-download-log" class="btn ghost">下载</button>
+            <button id="btn-refresh-log" class="btn ghost">刷新</button>
+          </div>
+        </div>
+        <div class="card" id="health-card">
+          <h2>迁移/升级健康检查</h2>
+          <div id="health-view" class="plugin-meta">启动时自动执行（dump-config 验证插件层与数据目录落位）…</div>
         </div>
         <pre id="log-view" class="log-view">加载中…</pre>
       </section>
@@ -405,6 +526,8 @@
     </div>
   </div>
 
+  <div id="shell-pet-layer"></div>
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

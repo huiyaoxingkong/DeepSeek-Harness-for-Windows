@@ -1,0 +1,7 @@
+{
+  "id": "example-status",
+  "name": "示例：运行状态卡片",
+  "version": "1.0.0",
+  "description": "外壳插件示例：在「关于」页追加运行状态卡片（时钟 + 服务器状态），演示 registerCard 用法",
+  "entry": "main.js"
+}

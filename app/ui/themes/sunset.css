@@ -1,0 +1,18 @@
+/* 外观：暖橙霞光（Sunset）——内置外观之一，仅覆盖 CSS 变量 */
+:root {
+  --bg: #160e14;
+  --panel: #22141c;
+  --panel-2: #2e1a26;
+  --fg: #f6e8ec;
+  --fg-dim: #b08a98;
+  --fg-faint: #7d5a68;
+  --border: #3a2030;
+  --accent: #e8633a;
+  --accent-2: #ff8a5c;
+  --ok: #4ade80;
+  --warn: #fcd34d;
+  --err: #fb7185;
+  --shadow: 0 8px 24px rgba(30, 8, 20, .5);
+}
+.sidebar { background: linear-gradient(180deg, #271522, #160e14); }
+.brand-mark { background: linear-gradient(135deg, #e8633a, #ff8a5c); }

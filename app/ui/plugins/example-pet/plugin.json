@@ -1,0 +1,7 @@
+{
+  "id": "example-pet",
+  "name": "示例：桌宠接口演示",
+  "version": "1.0.0",
+  "description": "演示外壳桌宠插件接口：可拖拽的浮动小球，点击变色（接口预留示例）",
+  "entry": "main.js"
+}

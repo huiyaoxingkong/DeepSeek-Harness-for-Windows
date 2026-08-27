@@ -1,4 +1,4 @@
-# Build the bundled store plugin package (dshmarket) from the local source
+﻿# Build the bundled store plugin package (dshmarket) from the local source
 # archive dsh-market-main.zip into app/store/dshmarket-<version>.tgz.
 #
 # The published store package is a build product (lib/ + client/ are built by
@@ -41,6 +41,11 @@ if (-not (Test-Path $node)) { $node = "node"; $pnpm = "pnpm"; $npm = "npm" }
 else { $env:PATH = $nodeDir + [IO.Path]::PathSeparator + $env:PATH }
 
 Write-Host "=== build-store: pnpm install (dev toolchain, scripts off) ===" -ForegroundColor Cyan
+# Relaxed fetch budget for slow networks (large native tarballs).
+$env:npm_config_fetch_timeout = "600000"
+$env:npm_config_fetch_retries = "5"
+$env:pnpm_config_fetch_timeout = "600000"
+$env:pnpm_config_fetch_retries = "5"
 Push-Location $src
 try {
     # --shamefully-hoist: npm pack needs the bundled deps at the top-level

@@ -40,6 +40,32 @@ _APP_CHECK_CACHE: dict = {"ts": 0.0, "result": None}
 _APP_CHECK_TTL = 30 * 60
 
 
+_CORE_RELEASES_CACHE: dict = {"ts": 0.0, "data": []}
+
+
+def list_core_releases(cache_ttl: float = 1800.0) -> list[dict]:
+    """B2: upstream release list (tag/name/date) for the version selector."""
+    now = time.time()
+    if _CORE_RELEASES_CACHE["data"] and now - _CORE_RELEASES_CACHE["ts"] < cache_ttl:
+        return _CORE_RELEASES_CACHE["data"]
+    req = urllib.request.Request(
+        "https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=30",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    releases = [
+        {
+            "tag": str(item.get("tag_name") or ""),
+            "name": str(item.get("name") or item.get("tag_name") or ""),
+            "published": str(item.get("published_at") or "")[:10],
+        }
+        for item in data if isinstance(item, dict) and item.get("tag_name")
+    ]
+    _CORE_RELEASES_CACHE.update(ts=now, data=releases)
+    return releases
+
+
 def check_app_release(current_version: str, cache_ttl: float = _APP_CHECK_TTL) -> dict:
     """Check whether a newer desktop app release exists on GitHub."""
     now = time.time()
@@ -131,6 +157,7 @@ class CoreUpdater:
             "remote": None,            # {commit, date, message}
             "local": None,
             "canUpdate": False,
+            "tag": "",                 # optional release tag to build (B2)
             "error": None,
         }
         self._lock = threading.Lock()
@@ -191,12 +218,18 @@ class CoreUpdater:
     def cancel(self) -> None:
         self._cancel.set()
 
-    def download_and_build(self) -> dict:
+    def download_and_build(self, tag: str = "") -> dict:
         with self._lock:
             if self._state["phase"] not in ("idle", "done"):
                 return {"ok": False, "message": f"正在{self._state['message']}，请稍候。"}
             self._state.update(phase="downloading", progress=0.02,
-                               message="开始更新核心…", error=None)
+                               message="开始更新核心…", error=None,
+                               tag=(tag or "").strip())
+            if tag:
+                self._state["remote"] = {
+                    "commit": tag, "date": "",
+                    "message": f"release {tag}",
+                }
         self._cancel.clear()
         worker = threading.Thread(target=self._run_update, daemon=True)
         worker.start()
@@ -327,10 +360,25 @@ class CoreUpdater:
             "message": data["commit"]["message"].splitlines()[0],
         }
 
+    def _mirror(self, url: str) -> str:
+        """B3: rewrite GitHub file/asset URLs through the configured mirror."""
+        mirror = (self._cfg.get("github_mirror") or "").strip().rstrip("/")
+        if not mirror:
+            return url
+        for prefix in ("https://github.com/", "https://codeload.github.com/",
+                       "https://objects.githubusercontent.com/",
+                       "https://raw.githubusercontent.com/"):
+            if url.startswith(prefix):
+                return mirror + "/" + url[len("https://"):]
+        return url
+
     def _download(self) -> str:
         os.makedirs(self._work_dir, exist_ok=True)
         zip_path = os.path.join(self._work_dir, "core-src.zip")
-        req = urllib.request.Request(ZIP_URL, headers={"User-Agent": USER_AGENT})
+        tag = self._state.get("tag") or ""
+        url = f"{UPSTREAM}/archive/refs/tags/{tag}.zip" if tag else ZIP_URL
+        req = urllib.request.Request(self._mirror(url),
+                                     headers={"User-Agent": USER_AGENT})
         tmp = zip_path + ".part"
         with urllib.request.urlopen(req, timeout=120) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
@@ -412,6 +460,8 @@ class CoreUpdater:
         env["pnpm_config_confirm_modules_purge"] = "false"
         env.update(homes.pnpm_env(homes.data_dir(self._app_dir, self._cfg),
                                   node_dir))
+        env.update(homes.registry_env(self._cfg))
+        env.update(homes.proxy_env(self._cfg))
         if extra_env:
             env.update(extra_env)
         log.info("run pnpm in %s: %s", src_dir, " ".join(args))
@@ -614,15 +664,20 @@ class AppUpdateController:
             "goto waitloop\r\n"
             ":run\r\n"
             f'echo upgraded > "{flag}"\r\n'
+            'if exist "%~dp0DeepSeek Harness.exe" copy /y "%~dp0DeepSeek Harness.exe" "%~dp0DeepSeek Harness.exe.bak" >nul\r\n'
             f'start "" /wait "{exe}" -y\r\n'
             'if not exist "%~dp0upgrading.flag" goto done\r\n'
             'echo 升级包后置脚本未完成，执行自愈…\r\n'
             'if exist "%~dp0scripts\\restore-junctions.ps1" (\r\n'
             '  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\\restore-junctions.ps1" "%~dp0core"\r\n'
             ')\r\n'
+            'if not exist "%~dp0DeepSeek Harness.exe" (\r\n'
+            '  if exist "%~dp0DeepSeek Harness.exe.bak" copy /y "%~dp0DeepSeek Harness.exe.bak" "%~dp0DeepSeek Harness.exe" >nul\r\n'
+            ')\r\n'
             f'start "" "{app_exe}"\r\n'
             ":done\r\n"
             'if exist "%~dp0upgrading.flag" del /q "%~dp0upgrading.flag"\r\n'
+            'if exist "%~dp0DeepSeek Harness.exe.bak" del /q "%~dp0DeepSeek Harness.exe.bak"\r\n'
             'if exist "%~f0" del /q "%~f0"\r\n'
             "exit /b 0\r\n"
         )
@@ -647,15 +702,30 @@ class AppUpdateController:
                 raise RuntimeError(res.get("message") or "没有可用的新版本")
             latest = res.get("latest") or {}
             assets = latest.get("assets") or []
+            # Lazy is the default flavor: never pick Minimal-flavor assets
+            # (their names carry a "-Minimal-" infix). Minimal users update
+            # by downloading the -Minimal-Update.exe from Releases manually.
             update_asset = next((a for a in assets
-                                 if a.get("kind") == "update"), None)
+                                 if a.get("kind") == "update"
+                                 and "-Minimal-" not in (a.get("name") or "")),
+                                None)
             sha_asset = next((a for a in assets
-                              if a.get("kind") == "sha256"), None)
+                              if a.get("kind") == "sha256"
+                              and "-Minimal-" not in (a.get("name") or "")),
+                             None)
             if update_asset is None or not update_asset.get("url"):
                 raise RuntimeError("发布中未找到升级包（*-Update.exe）")
             self._cleanup_old_packages(update_asset["name"])
             dest = os.path.join(self._app_dir, update_asset["name"])
-            self._download_file(update_asset["url"], dest,
+            # B3: route asset downloads through the configured GitHub mirror.
+            mirror = (self._cfg.get("github_mirror") or "").strip().rstrip("/")
+            asset_url = update_asset["url"]
+            if mirror:
+                for prefix in ("https://github.com/", "https://objects.githubusercontent.com/"):
+                    if asset_url.startswith(prefix):
+                        asset_url = mirror + "/" + asset_url[len("https://"):]
+                        break
+            self._download_file(asset_url, dest,
                                 int(update_asset.get("size") or 0))
             sha256 = ""
             if sha_asset is not None and sha_asset.get("url"):

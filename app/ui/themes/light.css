@@ -1,0 +1,33 @@
+/* 外观：浅色（Light）——内置外观之一：整组亮色变量 + 布局微调 */
+:root {
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --fg: #1a1e26;
+  --fg-dim: #59606e;
+  --fg-faint: #8b93a3;
+  --border: #d9dee8;
+  --accent: #4d6bfe;
+  --accent-2: #3b55e8;
+  --ok: #0d9f6e;
+  --warn: #b7791f;
+  --err: #dc3d43;
+  --radius: 10px;
+  --shadow: 0 6px 18px rgba(20, 30, 60, .10);
+}
+body { color: var(--fg); }
+.sidebar { background: #e9edf5; border-right: 1px solid var(--border); }
+.brand-mark { background: linear-gradient(135deg, #4d6bfe, #7c93ff); color: #fff; }
+.card { box-shadow: 0 1px 3px rgba(20, 30, 60, .06); }
+.frame-wrap { background: #ffffff; }
+.btn { background: var(--panel); color: var(--fg); border-color: var(--border); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.ghost { background: transparent; }
+.btn.danger { background: rgba(220, 61, 67, .10); color: var(--err); border-color: rgba(220, 61, 67, .35); }
+.float-exit { background: rgba(255, 255, 255, .85); border-color: var(--border); color: var(--fg); }
+.tag.bundle { background: rgba(77, 107, 254, .12); }
+.tag.plain { background: rgba(183, 121, 31, .12); }
+.tag.miss { background: rgba(220, 61, 67, .12); }
+.banner.ok { background: rgba(13, 159, 110, .10); }
+.banner.err { background: rgba(220, 61, 67, .10); }
+.banner.info { background: rgba(77, 107, 254, .08); }

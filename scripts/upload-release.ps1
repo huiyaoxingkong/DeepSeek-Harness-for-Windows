@@ -1,13 +1,13 @@
-# Upload v<Version> source + release artifacts to GitHub.
+﻿# Upload v<Version> source + release artifacts to GitHub.
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.2
+#   powershell -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.3
 #
 # Steps: tag + push source, create the GitHub Release, upload Setup/Update
 # exes and SHA256 files. Auth comes from git's credential helper (the same
 # credential that git push uses); pass -Token to override. Network calls
 # retry with backoff because GitHub can be flaky from some networks.
 param(
-    [string]$Version = "1.0.2",
+    [string]$Version = "1.0.3",
     [string]$Tag = "v$Version",
     [string]$Token = "",
     [switch]$SkipPush
