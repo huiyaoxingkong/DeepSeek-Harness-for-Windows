@@ -65,7 +65,7 @@ if (-not $SkipPush) {
     Write-Host "=== Pushing source + tag $Tag ===" -ForegroundColor Cyan
     git -C $root add -A
     git -C $root -c user.name="DSH Desktop" -c user.email="dsh-desktop@users.noreply.github.com" `
-        commit -m "v${Version}: portable per-instance data dir, dsh-web plugin compatibility, in-app upgrade" `
+        commit -m "v${Version}: dual-package release, shell plugin system, themes/pet, tray, DPAPI, tag updates, mirrors, health check, i18n" `
         --quiet 2>$null
     if ($LASTEXITCODE -ne 0) { Write-Host "  (commit may already exist, continuing)" }
     Invoke-Retry { git -C $root push origin main }

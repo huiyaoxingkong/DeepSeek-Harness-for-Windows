@@ -17,7 +17,7 @@
 | 6 | F3 (P1) | 外观系统（多组内置外观 + 插件接口）+ 桌宠插件接口 | ✅ 完成：5 组内置外观（黑/蓝青/霞光/森林/浅色）、设置页外观卡片即时切换+持久化、ShellPlugin.registerTheme 插件接口、桌宠挂载层 + registerPet/unregisterPet/getPetLayer 接口 + 示例桌宠插件 example-pet；端到端测试全过 |
 | 7 | A3/A4/A5/A6/C1/C2/D1 (P1/P2) | 兼容性收尾 + 托盘 + 商店升级 | ✅ 完成：A3 源码核实 dshHomePath≡DSH_HOME；A4 记录聚合包默认禁用+外壳接管；A5 含空格/中文/括号路径 shim 实测通过；A6 迁移后 dump-config 健康检查（logs/health.json + 日志页卡片）；C1 核实 dsh-web-all 0.3.5 即最新；C2 dshmarket 升级 1.33.0（rebundle-store-tgz.py 离线重打包，结构校验过）；D1 ctypes 零依赖托盘（消息循环+命令队列实测）+ 关闭到托盘开关 |
 | 8 | B2/B3/D2/D3/D4/E1/E2/E3 (P2) | 核心版本选择/镜像、自启、DPAPI、代理、日志、i18n、回滚 | ✅ 完成：B2 发布 tag 选择更新/回退（Releases API + tag zip 构建）；B3 代理/npm 镜像/GitHub 镜像三配置全链注入；D2 HKCU Run 开机自启开关；D3 DPAPI 密钥加密 + 旧明文自动迁移（往返实测）；D4 HTTP 代理注入核心/插件进程；E1 日志过滤/着色/复制/下载；E2 中英 i18n（零标记反向映射 + 语言选择持久化）；E3 升级 exe 备份/恢复回滚 |
-| 9 | C3/D5/E4 (P3) + 发布 | 全家桶预设、包体优化、多实例面板；make-release + RELEASE_NOTES | ✅ 代码完成：C3 全家桶一键预设；D5 压缩级别 9 + 构建期 prune --prod + smoke 启动断言；E4 本机实例面板（进程+端口扫描，实测）；README/RELEASE_NOTES 1.0.3 完成；**发布构建进行中**（pnpm 超时已放宽、store 已缓存，后台任务 pwsh-11 继续） |
+| 9 | C3/D5/E4 (P3) + 发布 | 全家桶预设、包体优化、多实例面板；make-release + RELEASE_NOTES | ✅ 全部完成：4 个安装包 + SHA256 产物齐备（Lazy 606.5MB / Minimal 496.4MB）；双包结构验证通过（GBK bat 中文正确、GUI SFX 模块、极简无 runtime、核心启动 0.1.1-rc.2）；smoke（结构/中文名/状态排除/升级演练）PASS；源码已提交 + 标签 v1.0.3；**GitHub 上传需用户在本机执行 upload-release.ps1（沙箱无法使用 git 凭据）** |
 
 ## 成本控制约定
 
