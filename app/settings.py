@@ -6,6 +6,10 @@ import json
 import os
 import threading
 
+# Current launcher version; synced into config.json at startup so upgraded
+# installs report the real version instead of the pre-upgrade one.
+VERSION = "1.0.3"
+
 
 class Settings:
     """Thread-safe JSON settings file with a minimal default schema."""
@@ -23,7 +27,7 @@ class Settings:
         "core_dir": "core",
         "runtime_dir": "runtime",
         "data_dir": "data",
-        "app_version": "1.0.3",
+        "app_version": VERSION,
         "last_updated_core": "",
         "onboarding_done": False,
         "shell_plugins": {},

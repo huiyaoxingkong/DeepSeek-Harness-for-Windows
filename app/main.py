@@ -552,6 +552,12 @@ class Bridge:
 
 def main() -> None:
     cfg = settings.Settings(os.path.join(APP_DIR, "config.json"))
+    # Upgraded installs keep the pre-upgrade config.json: re-sync the version
+    # so the about page and the app-update check see the real build.
+    if cfg.get("app_version") != settings.VERSION:
+        cfg.set("app_version", settings.VERSION)
+        cfg.save()
+        log.info("app_version synced to %s", settings.VERSION)
     # D3: migrate a legacy plaintext API key to DPAPI-encrypted storage once.
     raw_key = cfg.get("api_key", "") or ""
     if raw_key and not raw_key.startswith("dpapi:"):
