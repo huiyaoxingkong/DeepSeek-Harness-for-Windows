@@ -335,6 +335,39 @@ $("preset-web-all").addEventListener("click", () => {
   $("plugin-spec").focus();
 });
 
+/* C3: 免编译预设 —— 除 dsh-ssh（需编译 cpu-features）外的全套 dsh-web 插件 */
+const PRESET_WEB_NO_SSH = [
+  "@linxin666/dsh-client-ui-aionui-panel",
+  "@linxin666/dsh-chat-recovery",
+  "@linxin666/dsh-client-ui-community-plugins",
+  "@linxin666/dsh-desktop-launcher",
+  "@linxin666/dsh-doctor",
+  "@linxin666/dsh-client-ui-git-graph",
+  "@linxin666/dsh-liangshen",
+  "@linxin666/dsh-client-ui-market",
+  "@linxin666/dsh-perf",
+  "@linxin666/dsh-pet",
+  "@linxin666/dsh-client-ui-plugin-manager",
+  "@linxin666/dsh-remote-web-ui",
+  "@linxin666/dsh-client-ui-session-id",
+  "@linxin666/dsh-client-ui-skill-explorer",
+  "@linxin666/dsh-client-ui-task-board",
+  "@linxin666/dsh-tool-describe-image",
+  "@linxin666/dsh-client-ui-web-ui-settings",
+  "@linxin666/dsh-client-ui-skin-center",
+  "dsh-better-sidebar",
+  "@mlgbnb/dsh-archive-manager",
+];
+$("preset-web-no-ssh").addEventListener("click", async () => {
+  if (!confirm("将一次性安装 dsh-web 全套插件（不含 SSH，无需编译工具）。\n安装期间请勿关闭应用。继续？")) return;
+  const res = await callApi("install_plugin", { specs: PRESET_WEB_NO_SSH });
+  showBannerEl($("plugin-banner"), res.ok ? "ok" : "err", res.message);
+  if (res.ok) {
+    stopPluginPoll();
+    pluginPollTimer = setInterval(pollPluginState, 1500);
+  }
+});
+
 $("btn-change-key").addEventListener("click", () => {
   setKeyMode(apiKeyEditing ? "masked" : "editing");
 });

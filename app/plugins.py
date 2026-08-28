@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 
 import homes
 
@@ -107,6 +108,13 @@ class PluginManager:
                                      or " " in os.path.basename(spec)):
             spec = self._stage(spec)
         return self._run(["add", spec], "installing")
+
+    def install_many(self, specs: list[str]) -> tuple[bool, str]:
+        """Install several npm specs in one pnpm add (presets)."""
+        specs = [s.strip() for s in specs if str(s).strip()]
+        if not specs:
+            return False, "预设列表为空"
+        return self._run(["add", *specs], "installing")
 
     def import_from_file(self, path: str) -> tuple[bool, str]:
         """Install a plugin from a local file: npm tarball (.tgz / .tar.gz)
@@ -259,17 +267,19 @@ class PluginManager:
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self._proc = proc
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.rstrip()
-                if not line:
-                    continue
-                with self._lock:
-                    self._state["output"].append(line)
-                    if len(self._state["output"]) > 200:
-                        self._state["output"].pop(0)
-                    self._state["message"] = line[:90]
-            proc.wait()
+            # pnpm grandchildren (node-gyp etc.) can inherit and hold the
+            # stdout pipe after the main process exits — a plain for-loop over
+            # stdout would never reach EOF. Collect on a daemon thread and
+            # finalize from the process exit instead.
+            collector = threading.Thread(
+                target=self._collect_output, args=(proc,), daemon=True)
+            collector.start()
+            try:
+                proc.wait(timeout=3600)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=10)
+            time.sleep(0.4)  # let the collector drain the tail
             with self._lock:
                 if proc.returncode == 0:
                     self._state.update(phase="idle", message="操作完成，重启服务器后生效。")
@@ -281,6 +291,21 @@ class PluginManager:
             with self._lock:
                 self._state.update(phase="idle", message=f"无法启动插件命令: {exc}",
                                    error=str(exc))
+
+    def _collect_output(self, proc) -> None:
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                if not line:
+                    continue
+                with self._lock:
+                    self._state["output"].append(line)
+                    if len(self._state["output"]) > 200:
+                        self._state["output"].pop(0)
+                    self._state["message"] = line[:90]
+        except (OSError, ValueError):
+            pass
 
     # ------------------------------------------------------------- state
 

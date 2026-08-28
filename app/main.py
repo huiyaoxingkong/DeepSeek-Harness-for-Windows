@@ -309,8 +309,12 @@ class Bridge:
         return self._plugins.list()
 
     def install_plugin(self, payload: dict) -> dict:
-        spec = (payload or {}).get("spec", "")
-        ok, msg = self._plugins.install(spec)
+        specs = (payload or {}).get("specs")
+        if isinstance(specs, list) and specs:
+            ok, msg = self._plugins.install_many(specs)
+        else:
+            spec = (payload or {}).get("spec", "")
+            ok, msg = self._plugins.install(spec)
         return {"ok": ok, "message": msg}
 
     def remove_plugin(self, payload: dict) -> dict:
