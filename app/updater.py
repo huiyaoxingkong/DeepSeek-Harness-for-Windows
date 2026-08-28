@@ -665,7 +665,7 @@ class AppUpdateController:
             ":run\r\n"
             f'echo upgraded > "{flag}"\r\n'
             'if exist "%~dp0DeepSeek Harness.exe" copy /y "%~dp0DeepSeek Harness.exe" "%~dp0DeepSeek Harness.exe.bak" >nul\r\n'
-            f'start "" /wait "{exe}" -y\r\n'
+            f'start "" /D "%~dp0" /wait "{exe}" -y\r\n'
             'if not exist "%~dp0upgrading.flag" goto done\r\n'
             'echo 升级包后置脚本未完成，执行自愈…\r\n'
             'if exist "%~dp0scripts\\restore-junctions.ps1" (\r\n'
@@ -674,7 +674,7 @@ class AppUpdateController:
             'if not exist "%~dp0DeepSeek Harness.exe" (\r\n'
             '  if exist "%~dp0DeepSeek Harness.exe.bak" copy /y "%~dp0DeepSeek Harness.exe.bak" "%~dp0DeepSeek Harness.exe" >nul\r\n'
             ')\r\n'
-            f'start "" "{app_exe}"\r\n'
+            f'start "" /D "%~dp0" "{app_exe}"\r\n'
             ":done\r\n"
             'if exist "%~dp0upgrading.flag" del /q "%~dp0upgrading.flag"\r\n'
             'if exist "%~dp0DeepSeek Harness.exe.bak" del /q "%~dp0DeepSeek Harness.exe.bak"\r\n'
