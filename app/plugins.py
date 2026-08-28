@@ -223,7 +223,12 @@ class PluginManager:
         if bundled:
             homes.ensure_dsh_shim(node_dir, self._core.bin_js)
         cmd = [self._core.node_exe, self._core.bin_js, "plugin",
-               "--profile", PROFILE, *args]
+               "--profile", PROFILE]
+        # Local file specs (staged tarballs/zips) live under the app dir which
+        # may contain spaces; the dsh CLI splits unquoted space paths, so map
+        # them through a space-free junction instead.
+        cmd += [homes.cli_path(self._app_dir, a) if os.path.exists(a) else a
+                for a in args]
         env = dict(os.environ)
         paths = [node_dir] if os.path.isdir(node_dir) else []
         paths.extend(homes.git_path_entries(node_dir))
@@ -233,6 +238,12 @@ class PluginManager:
         env.update(homes.pnpm_env(data, node_dir if bundled else data))
         env.update(homes.proxy_env(self._cfg))
         env.update(homes.registry_env(self._cfg))
+        # Slow networks: relax pnpm's fetch budget for plugin installs too
+        # (large native tarballs like dsh-pet's assets stall otherwise).
+        env["npm_config_fetch_timeout"] = "600000"
+        env["npm_config_fetch_retries"] = "5"
+        env["pnpm_config_fetch_timeout"] = "600000"
+        env["pnpm_config_fetch_retries"] = "5"
         log.info("plugin run: %s", " ".join(cmd))
         worker = threading.Thread(
             target=self._run_worker, args=(cmd, env, phase), daemon=True)

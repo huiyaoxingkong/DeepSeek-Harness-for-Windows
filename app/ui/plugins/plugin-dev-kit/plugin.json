@@ -1,0 +1,7 @@
+{
+  "id": "plugin-dev-kit",
+  "name": "外壳插件开发套件",
+  "version": "1.0.0",
+  "description": "壳内插件：可视化生成 plugin.json 与 main.js 骨架并打包下载 zip（创造模式开发流的落地工具）",
+  "entry": "main.js"
+}

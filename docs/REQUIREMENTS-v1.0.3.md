@@ -83,16 +83,16 @@
 
 ## B. 上游核心版本升级
 
-### B1 [P1] 核心基线升级到最新上游【已核实：无需升级】
+### B1 [P1] 核心基线升级到最新上游【核实更新（2026-08-29）】
 - **核实结论（2026-08-27，git ls-remote + blobless clone 验证）**：
   - 上游 tag 时间线：`dsh-v0.1.0-rc.7`（08-17）→ `dsh-v0.1.0-rc.8`（08-19）→
     `dsh-v0.1.1-rc.1`（08-21 14:21）→ `dsh-v0.1.1-rc.2`（08-21 20:03）；
-  - **上游 master HEAD = 内置基线 commit `b150a551b8d4`（rc.2 合并）**，`rc.2..master`
-    无任何新提交——内置核心已是上游最新 release 与 master 顶点；
-  - 新闻中的「rc.8 多模态 14 项更新」属更早的 0.1.0 线，rc.2 已全部包含。
-- **调整为**：不做版本升级；在发布前对内置 rc.2 做 Windows 回归验证
-  （会话持久化 / PTY shell / bash 子进程崩溃 #2990 / 沙箱边界 #2066），
-  验证结果记录到 1.0.3 发布说明。后续上游发新 tag 时由「核心更新」页跟升。
+  - 当时 master HEAD = 内置基线 `b150a551b8d4`（rc.2），新闻中的「rc.8 多模态」属更早的 0.1.0 线。
+- **更新（2026-08-29）**：上游 master 已前进至 `cd5ef8148`（`dsh-0.1.2-alpha.1`）。
+  内置基线**保持 rc.2（稳定版）**；alpha 版本由用户经「核心更新 → 选择版本更新 /
+  跟随 master」主动升级。修复构建期元数据缺陷：`write-core-info.py` 原先记录实时
+  master 提交，会把 rc.2 源码误标成 alpha.1（更新检查误报「已是最新」）；现改为
+  显式参数 → `core\.upstream-commit` 标记 → 本地 git HEAD → API 兜底。
 - **回归项（升级前必须验证）**：
   - rc.7 起 node-pty 在 Windows 的持久 PTY shell 问题（pid 0，
     [Discussion #2851](https://github.com/deepseek-ai/deepseek-harness/discussions/2851)）；

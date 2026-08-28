@@ -481,9 +481,10 @@ class Bridge:
         import io
         rows = []
         try:
+            script = ("Get-CimInstance Win32_Process -Filter \"Name='DeepSeek Harness.exe'\" | "
+                      "Select-Object ProcessId, ExecutablePath | ConvertTo-Csv -NoTypeInformation")
             out = subprocess.run(
-                ["wmic", "process", "where", "name='DeepSeek Harness.exe'",
-                 "get", "ProcessId,ExecutablePath", "/format:csv"],
+                ["powershell", "-NoProfile", "-Command", script],
                 capture_output=True, text=True, timeout=30,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
@@ -571,13 +572,19 @@ def main() -> None:
     # settings and skins. Set DSH_HOME first, then migrate the legacy
     # ~/.dsh (move, one-time) and heal the profile for the plugin family.
     data_dir, home = homes.apply_home_env(APP_DIR, cfg)
-    homes.migrate_legacy_home(APP_DIR, cfg)
+    migration = homes.migrate_legacy_home(APP_DIR, cfg)
     homes.cleanup_legacy_garbled_files(APP_DIR)
     homes.heal_profile_file_deps(home, APP_DIR)
     homes.ensure_profile_workspace(home)
     core_stub = core_api.CoreController(APP_DIR, cfg)
     if homes.detect_tools(APP_DIR, cfg)["node"]["mode"] == "bundled":
         homes.ensure_dsh_shim(core_stub.runtime_dir, core_stub.bin_js)
+    # Migration excluded node_modules (legacy store links): reinstall the
+    # profile against the instance store, in the background.
+    if migration.get("moved"):
+        threading.Thread(target=homes.reinstall_profile,
+                         args=(home, data_dir, core_stub.node_exe),
+                         daemon=True).start()
     # A6: verify the migrated/upgraded profile once, in the background.
     threading.Thread(target=homes.run_health_check,
                      args=(APP_DIR, cfg, core_stub.node_exe, core_stub.bin_js),

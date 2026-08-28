@@ -34,6 +34,18 @@ const I18N_DICT = {
     "tools.bundled": "内置", "tools.system": "系统", "tools.missing": "缺失",
     "tools.lazy": "懒人包（内置 Node.js + Git）", "tools.minimal": "极简包（运行环境自装）",
     "lang.label": "界面语言",
+    "toast.save": "已保存",
+    "btn.copied": "已复制",
+    "btn.genPrompt": "生成提示词",
+    "btn.install": "安装",
+    "btn.pickPlugin": "选择插件包…",
+    "plugins.preset": "常用预设：",
+    "plugins.presetWebAll": "dsh-web 全家桶（19 插件聚合包）",
+    "update.tagBtn": "更新到所选版本",
+    "update.refreshList": "刷新列表",
+    "logs.filter": "过滤关键词…",
+    "instances.title": "本机实例",
+    "btn.copy": "复制",
   },
   en: {
     "nav.workspace": "Workspace", "nav.plugins": "Plugins", "nav.settings": "Settings",
@@ -65,10 +77,23 @@ const I18N_DICT = {
     "tools.bundled": "Bundled", "tools.system": "System", "tools.missing": "Missing",
     "tools.lazy": "Lazy package (bundled Node.js + Git)", "tools.minimal": "Minimal package (self-provided runtimes)",
     "lang.label": "UI Language",
+    "toast.save": "Saved",
+    "btn.copied": "Copied",
+    "btn.genPrompt": "Generate Prompt",
+    "btn.install": "Install",
+    "btn.pickPlugin": "Choose plugin package…",
+    "plugins.preset": "Presets: ",
+    "plugins.presetWebAll": "dsh-web all-in-one (19-plugin bundle)",
+    "update.tagBtn": "Update to Selected Version",
+    "update.refreshList": "Refresh List",
+    "logs.filter": "Filter keywords…",
+    "instances.title": "Local Instances",
+    "btn.copy": "Copy",
   },
 };
 
 window.__i18nLang = "zh";
+window.__i18nPrevLang = "zh";  // language the static DOM currently shows
 window.__i18nKeys = { zh: {}, en: {} };
 Object.keys(I18N_DICT).forEach(lang => {
   Object.entries(I18N_DICT[lang]).forEach(([k, v]) => { window.__i18nKeys[lang][v] = k; });
@@ -80,7 +105,9 @@ window.t = function (key) {
 };
 
 function applyI18n() {
-  const keys = window.__i18nKeys[window.__i18nLang] || {};
+  // Look up DOM text with the map of the language CURRENTLY displayed
+  // (the DOM starts in zh; after a switch it holds the new language).
+  const keys = window.__i18nKeys[window.__i18nPrevLang] || {};
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
   const textNodes = [];
   while (walker.nextNode()) textNodes.push(walker.currentNode);
@@ -97,6 +124,7 @@ function applyI18n() {
     const key = keys[el.getAttribute("title") || ""];
     if (key) el.setAttribute("title", window.t(key));
   });
+  window.__i18nPrevLang = window.__i18nLang;
 }
 
 document.addEventListener("DOMContentLoaded", applyI18n);

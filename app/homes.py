@@ -19,12 +19,14 @@ minimum-release-age exclusion).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import tempfile
 
 log = logging.getLogger("homes")
 
@@ -91,6 +93,11 @@ def _robocopy(src: str, dst: str) -> int:
     cmd = [
         "robocopy", src, dst,
         "/E", "/XJ", "/COPY:DAT", "/DCOPY:DAT",
+        # node_modules dirs are hard-linked against the LEGACY pnpm store;
+        # copying them makes every later pnpm op fail with
+        # ERR_PNPM_UNEXPECTED_STORE. Metadata is kept (package.json etc.),
+        # and the profile is reinstalled against the instance store instead.
+        "/XD", "node_modules",
         "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
     ]
     try:
@@ -148,6 +155,49 @@ def migrate_legacy_home(app_dir: str, cfg) -> dict:
     # older releases; newer releases keep it under $DSH_HOME/.dsh-doctor.
     _migrate_doctor_state(home)
     return result
+
+
+def reinstall_profile(home: str, data: str, node_exe: str) -> None:
+    """Reinstall the migrated profile against the instance pnpm store.
+
+    The migration excludes node_modules (legacy store links), so run
+    ``pnpm install`` in the profile when its manifest still lists deps.
+    Best-effort, runs in a background thread, and tolerates no-network
+    environments (the instance store usually has the tarballs cached).
+    """
+    profile = os.path.join(home, "profiles", "web")
+    manifest = os.path.join(profile, "package.json")
+    if not os.path.isfile(manifest):
+        return
+    try:
+        with open(manifest, "r", encoding="utf-8") as fh:
+            deps = json.load(fh).get("dependencies") or {}
+    except (OSError, ValueError):
+        return
+    if not deps or os.path.isdir(os.path.join(profile, "node_modules")):
+        return
+    pnpm = os.path.join(os.path.dirname(node_exe), "pnpm.cmd")
+    if not os.path.isfile(pnpm):
+        pnpm = "pnpm"
+    env = dict(os.environ)
+    env["PATH"] = os.path.dirname(node_exe) + os.pathsep + env.get("PATH", "")
+    env["DSH_HOME"] = home
+    env.update(pnpm_env(data, os.path.dirname(node_exe)))
+    env["npm_config_fetch_timeout"] = "600000"
+    env["npm_config_fetch_retries"] = "5"
+    env["pnpm_config_fetch_timeout"] = "600000"
+    env["pnpm_config_fetch_retries"] = "5"
+    log.info("profile reinstall after migration: %s", profile)
+    try:
+        proc = subprocess.run(
+            [pnpm, "install", "--no-frozen-lockfile"],
+            cwd=profile, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=1800,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        log.info("profile reinstall exit: %d", proc.returncode)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("profile reinstall failed: %s", exc)
 
 
 def _migrate_doctor_state(home: str) -> None:
@@ -270,7 +320,14 @@ def ensure_profile_workspace(home: str) -> dict:
     profile_dir = os.path.join(home, "profiles", "web")
     path = os.path.join(profile_dir, "pnpm-workspace.yaml")
     if not os.path.isdir(profile_dir):
-        return {"created": False, "changed": False}
+        # First plugin install ever: the dsh CLI will create the profile, but
+        # pnpm must already find allowBuilds etc. by then or native deps fail
+        # with ERR_PNPM_IGNORED_BUILDS. Pre-create the dir + template.
+        try:
+            os.makedirs(profile_dir, exist_ok=True)
+        except OSError as exc:
+            log.warning("profile dir create failed: %s", exc)
+            return {"created": False, "changed": False}
     if not os.path.isfile(path):
         try:
             with open(path, "w", encoding="utf-8") as fh:
@@ -424,6 +481,52 @@ def git_path_entries(runtime_dir: str) -> list[str]:
         if os.path.isdir(path):
             entries.append(path)
     return entries
+
+
+_SPACE_FREE_JUNCTION: dict[str, str] = {}
+
+
+def _space_free_junction(app_dir: str) -> str:
+    """Space-free junction in %TEMP% pointing at the app dir.
+
+    The dsh CLI forwards path specs to pnpm through a shell that splits
+    unquoted space paths; install dirs like ``C:\\DeepSeek Harness`` break.
+    8.3 short names are disabled on many systems, so stage a junction
+    (mklink /J needs no elevation) and pass paths through it instead.
+    """
+    key = os.path.normcase(os.path.abspath(app_dir))
+    cached = _SPACE_FREE_JUNCTION.get(key)
+    if cached and os.path.isdir(cached):
+        return cached
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    junction = os.path.join(tempfile.gettempdir(), f"dsh-j{digest}")
+    if not os.path.isdir(junction):
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", junction, app_dir],
+                capture_output=True, timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    if os.path.isdir(junction):
+        _SPACE_FREE_JUNCTION[key] = junction
+        return junction
+    return app_dir  # fall back to the original (space-y) path
+
+
+def cli_path(app_dir: str, path: str) -> str:
+    """Rewrite a path under a space-y app dir through a space-free junction
+    so shell-based CLIs (pnpm) don't split it. No-op when unnecessary."""
+    if " " not in path:
+        return path
+    try:
+        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(app_dir))
+    except (ValueError, OSError):
+        return path
+    if rel == "." or rel.startswith(".."):
+        return path
+    return os.path.join(_space_free_junction(app_dir), rel)
 
 
 def proxy_env(cfg) -> dict:

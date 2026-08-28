@@ -125,6 +125,11 @@ class CoreController:
                 env["DEEPSEEK_API_KEY"] = api_key
             env.update(homes.proxy_env(self._cfg))
             env.update(homes.registry_env(self._cfg))
+            # Relaxed fetch budget for plugin-triggered pnpm runs.
+            env["npm_config_fetch_timeout"] = "600000"
+            env["npm_config_fetch_retries"] = "5"
+            env["pnpm_config_fetch_timeout"] = "600000"
+            env["pnpm_config_fetch_retries"] = "5"
             base_url = self._cfg.get("base_url") or ""
             if base_url:
                 env["DEEPSEEK_BASE_URL"] = base_url
@@ -187,10 +192,12 @@ class CoreController:
         import io
         marker = os.path.normcase(self.core_dir).lower()
         try:
+            # wmic is gone on modern Windows 11; use CIM via PowerShell.
+            script = ("Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | "
+                      "Select-Object ProcessId, CommandLine | ConvertTo-Csv -NoTypeInformation")
             out = subprocess.run(
-                ["wmic", "process", "where", "name='node.exe'", "get",
-                 "ProcessId,CommandLine", "/format:csv"],
-                capture_output=True, text=True, timeout=30,
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True, text=True, timeout=60,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except (OSError, subprocess.TimeoutExpired):
