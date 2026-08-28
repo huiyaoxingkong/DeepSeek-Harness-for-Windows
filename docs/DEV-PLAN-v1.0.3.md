@@ -26,6 +26,27 @@
 - 不做大范围并行子代理；优先单文件定向编辑；复读大文件用 offset/limit；
 - 每完成一个阶段更新本文件「状态」并汇报一次。
 
+## 系统测试与修复轮（2026-08-29）
+
+真实运行 dist 开发实例 + HTTP 桥驱动测试，发现并修复 9 个缺陷：
+
+| # | 缺陷 | 修复 |
+| --- | --- | --- |
+| 1 | 安装目录含空格时，传给 dsh/pnpm 的本地包路径被按空格拆分（默认安装路径必踩） | `homes.cli_path()`：无空格 junction（%TEMP%\dsh-j<哈希> → 应用目录）映射；实测预装 2.2s 成功 |
+| 2 | Windows 11 移除 wmic → 实例面板/孤儿进程清理静默失效 | 改用 PowerShell Get-CimInstance（实测列出生产+开发实例） |
+| 3 | pnpm 大包下载超时导致插件安装失败 | 插件/核心子进程注入放宽的 fetch timeout/retries |
+| 4 | 语言切换失效（applyI18n 用目标语言映射查当前 DOM 文本） | 改用「当前显示语言」映射 + prevLang 追踪 |
+| 5 | 迁移复制旧 node_modules（旧 store 硬链接）→ ERR_PNPM_UNEXPECTED_STORE | 迁移排除 node_modules + 迁移后自动 pnpm install |
+| 6 | 全新 profile 首次安装缺 allowBuilds → ERR_PNPM_IGNORED_BUILDS | ensure_profile_workspace 预创建目录+模板 |
+| 7 | write-core-info 记录实时 master 而非实际源码 → 版本误报 | 优先级：显式参数 → .upstream-commit → git HEAD → API 兜底 |
+| 8 | 插件 worker 因孙进程持有 stdout 管道永不结束 → 页面永久「安装中」 | 收集线程 + proc.wait 超时，从进程退出定状态 |
+| 9 | 8.3 短名被禁用时无空格路径方案失效 | 并入 #1 的 junction 方案 |
+
+验证：核心启动/停止、dsh Web 200、健康检查 ok、主题/语言持久化、
+实例面板、托盘轮询、自启注册表、tag zip 可达、**全家桶免 SSH 预设 20 插件
+真实安装成功并带载启动**（聚合包在无编译工具机器上会因 cpu-features 失败，
+已提供免编译预设并记录）。
+
 ## 工程约定（本轮新增）
 
 - **含中文的 .ps1 必须 UTF-8 BOM**：无 BOM 时 PowerShell 按 ANSI 读脚本导致中文乱码
