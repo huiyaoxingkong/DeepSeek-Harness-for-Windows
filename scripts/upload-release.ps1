@@ -56,10 +56,19 @@ function Invoke-CurlJson([string]$Method, [string]$Url, [string]$Auth,
               "-H", "Accept: application/vnd.github+json",
               "-H", "User-Agent: DeepSeek-Harness-Desktop/1.0",
               "-H", "X-GitHub-Api-Version: 2022-11-28")
-    if ($JsonBody) { $args += @("-H", "Content-Type: application/json", "-d", $JsonBody) }
+    $tmpJson = ""
+    if ($JsonBody) {
+        # PS 5.1 mangles embedded quotes when passing -d to native commands
+        # (GitHub answers "Problems parsing JSON"); send the body via file.
+        $tmpJson = Join-Path $env:TEMP ("dsh-release-body-" + [guid]::NewGuid().ToString("N") + ".json")
+        [System.IO.File]::WriteAllText($tmpJson, $JsonBody,
+            (New-Object System.Text.UTF8Encoding($false)))
+        $args += @("-H", "Content-Type: application/json", "--data-binary", "@$tmpJson")
+    }
     if ($DataFile) { $args += @("-H", "Content-Type: application/octet-stream", "--data-binary", "@$DataFile") }
     $args += $Url
     $raw = & curl.exe @args
+    if ($tmpJson) { Remove-Item $tmpJson -Force -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE -ne 0) { throw "curl exit $LASTEXITCODE" }
     return $raw
 }
