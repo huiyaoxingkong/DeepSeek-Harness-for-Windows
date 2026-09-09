@@ -83,7 +83,10 @@ if (-not (Test-Path (Join-Path $realInstall "DeepSeek Harness.exe"))) {
     Write-Host "  real install not found; using dist copy instead"
     $realInstall = Join-Path $root "dist\DeepSeek Harness"
 }
-robocopy $realInstall $installCopy /E /XJ /NFL /NDL /NJH /NJS /NP | Out-Null
+# Exclude the (multi-GB) pnpm store from the dry-run copy: post-update never
+# touches it, and the dry-run only needs core/config/ui to behave like the
+# real install.
+robocopy $realInstall $installCopy /E /XJ /XD "data\store" /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -gt 7) { throw "install copy failed ($LASTEXITCODE)" }
 
 # simulate per-instance state that must survive the upgrade

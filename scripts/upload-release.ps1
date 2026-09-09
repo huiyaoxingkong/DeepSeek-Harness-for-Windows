@@ -35,6 +35,10 @@ function Invoke-Retry([scriptblock]$Action, [int]$Attempts = 5) {
 
 function Get-GitHubToken {
     if ($Token) { return $Token }
+    # Headless-friendly path: token from the environment (e.g. read from
+    # Windows Credential Manager by the caller) without invoking GCM, which
+    # can hang on interactive refresh in non-TTY contexts.
+    if ($env:GITHUB_TOKEN) { return $env:GITHUB_TOKEN }
     $input = "protocol=https`nhost=github.com`n`n"
     $out = $input | git credential fill 2>$null
     foreach ($line in ($out -split "`n")) {
@@ -42,7 +46,7 @@ function Get-GitHubToken {
             return $Matches[1].Trim()
         }
     }
-    throw "No GitHub credential found: run `"git credential fill`" manually or pass -Token"
+    throw "No GitHub credential found: set GITHUB_TOKEN, run `"git credential fill`" manually or pass -Token"
 }
 
 function Invoke-CurlJson([string]$Method, [string]$Url, [string]$Auth,

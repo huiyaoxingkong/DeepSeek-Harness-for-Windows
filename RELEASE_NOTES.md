@@ -1,113 +1,65 @@
 # DeepSeek Harness for Windows v1.0.4 发布声明
 
+**发布日期**：2026-09-09
 **项目主页**：https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows
 **版本标签**：v1.0.4
-
-本版本为稳定性修复版，聚焦排查结论中的四类问题：
-
-1. **内部插件更新失败（ERR_PNPM_UNEXPECTED_STORE）已修复**：旧实例的 web profile
-   依赖在旧路径（`~/.dsh`）时期链接到了用户全局 pnpm store，与 1.0.3 起强制使用的
-   实例内 store（`<data>\store`）不一致，导致插件安装 / 更新 / 卸载全部报错。现在
-   启动时自动检测 store 归属：不一致时把旧 store 的包内容合并进实例 store（同为
-   pnpm 11 布局，内容寻址文件可直接复用，无需重新下载）、重建 profile 依赖；
-   插件操作过程中遇到该错误也会自动重建并重试一次，用户无需手动处理。
-2. **外壳与内部插件连接稳定性**：外壳 UI 服务器改为并发处理（ThreadingHTTPServer），
-   慢速桥接调用（核心版本列表 / 商店目录抓取）不再阻塞外壳插件清单等其他请求；
-   客户端断连不再刷 ConnectionAborted 错误日志；dsh-doctor 插件状态目录经
-   `DSH_DOCTOR_HOME` 重定向到实例数据目录（消除 C 盘 `~/.dsh-doctor` 残留与
-   rename EPERM）。
-3. **外壳显示问题修复**：静态文件显式 MIME 映射（WebView2 严格 MIME 检查下外壳
-   插件脚本与主题不再偶发不加载）；版本信息页「当前核心版本」显示真实版本号；
-   内置商店源历史乱码标签自动修正并指向随包分发的 dshmarket 1.33.0。
-4. **外壳插件兼容与安全**：plugin.json 自定义 `entry` 字段正确生效；插件文件解析
-   与 zip 导入增加路径穿越防护。
-
----
-
-# DeepSeek Harness for Windows v1.0.3 发布声明
-
-**发布日期**：2026-08-27
-**项目主页**：https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows
-**版本标签**：v1.0.3
 
 ## 一、版本介绍
 
 DeepSeek Harness for Windows 是基于 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）官方源码构建的 **Windows 桌面封装**，为不熟悉命令行的用户提供完整的图形化体验。
 
-本版本（v1.0.3）在 v1.0.2 实例隔离与 dsh-web 全量兼容的基础上，聚焦四件事：**双包发布（懒人包 / 极简包）**、**外壳插件化与外观系统**、**桌面体验（托盘 / 自启 / 沉浸记忆）** 与 **安全运维（密钥加密 / 升级回滚 / 健康检查）**。
+本版本（v1.0.4）是 v1.0.3 的**稳定性修复版**，聚焦排查结论中的四类问题：**内部插件更新失败**、**外壳与内部插件连接稳定性**、**外壳显示问题** 与 **插件更新兼容性**，并完成一轮安全加固（桥方法白名单、DNS rebinding 防护、路径穿越与 zip-slip 防护）。
 
-### 1. 双包发布：懒人包与极简包
+### 1. 内部插件更新修复（ERR_PNPM_UNEXPECTED_STORE）
 
-- **懒人包（默认）**：内置便携 Node.js + **便携 Git for Windows 2.55**（git.exe + Git Bash）。
-  核心与插件进程 PATH 自动注入 Git 目录——dsh-web 生态的 `dsh-git-graph`（git 图形）、
-  `dsh-liangshen`（bash 工具）、插件的 git 源安装**开箱可用**，不再依赖系统安装 Git。
-- **极简包（`-Minimal-`）**：不内置任何运行时，体积更小；应用自动检测系统 Node / Git，
-  设置页「运行环境」卡片显示内置 / 系统 / 缺失状态；缺失时对应功能优雅降级并给出指引。
-- 同一版本同时发布两套 Setup / Update 安装包，懒人包保持原资产名（应用内更新无缝），
-  极简包带 `-Minimal-` 中缀（手动下载升级）。
+- 旧实例的 web profile 依赖在旧路径（`~/.dsh`）时期链接到了**用户全局 pnpm store**，与 1.0.3 起强制使用的实例内 store（`<数据目录>\store`）不一致，导致插件安装 / 更新 / 卸载全部报错。
+- 现在**启动时自动检测** store 归属：不一致时把旧 store 的包内容合并进实例 store（同为 pnpm 11 布局，内容寻址文件直接复用，无需重新下载）、重建 profile 依赖，全程快照保护、忽略构建脚本（避免原生模块编译卡死）、自动清理残留。
+- 插件操作过程中遇到该错误也会**自动重建并重试一次**，用户无需手动处理；服务器启动与插件操作会等待自愈完成，核心绝不会带着半个插件树启动。
 
-### 2. 外壳插件系统 + 外观系统 + 桌宠接口
+### 2. 外壳服务并发与断连容错
 
-- **外壳插件化（参考核心插件模式）**：壳内插件以 zip（`plugin.json` + `main.js`）分发，
-  经 `window.ShellPlugin` API 挂载新页面 / 卡片 / 页头按钮，支持本地导入、启用 / 停用 /
-  卸载；内置示例插件（运行状态卡片、桌宠小球）。
-- **生成插件提示词（创造模式开发流）**：插件页输入想法即可生成结构化开发提示词
-  （含 ShellPlugin API 规范、约束与交付格式），复制到工作台同工作区的新对话中用
-  **创造模式**开发外壳插件（壳内外联动方向已预留），产物 zip 一键回装。
-- **外观系统**：内置 5 组外观（深邃黑 / 深海蓝青 / 暖橙霞光 / 森林绿 / 浅色），
-  设置页一键切换、即时生效、自动记忆；插件经 `registerTheme` 可提供无限新外观。
-- **桌宠插件接口（预留）**：全窗口透明挂载层 + `registerPet / unregisterPet /
-  getPetLayer`（支持拖拽与生命周期回调），完整桌宠（Live2D 等）按同一接口实现。
+- 外壳 UI 服务器改为**并发处理**（ThreadingTCPServer）：慢速桥接调用（核心版本列表、商店目录抓取）不再阻塞外壳插件清单等其他请求。
+- 客户端中途断开的连接不再刷错误日志（WinError 10053 静默化）。
 
-### 3. 桌面体验
+### 3. 外壳显示修复
 
-- **系统托盘**：托盘图标 + 菜单（打开主界面 / 启动服务器 / 停止服务器 / 退出），
-  左键点击恢复窗口；新增「关闭窗口时最小化到系统托盘（后台运行）」与「开机自启」开关。
-- **工作台布局与沉浸**：嵌入区全宽铺满（修复全屏时两侧留白与双重滚动条），
-  沉浸模式状态记忆（重启恢复）、淡入切换、停止服务器自动退出沉浸。
+- **显式 MIME 映射**：WebView2 严格 MIME 检查下，依赖系统注册表推断的 `.js/.css` 类型偶发导致外壳插件脚本与主题静默不加载，现按扩展名显式返回正确类型。
+- 版本信息页「当前核心版本」显示真实版本号（不再显示提交哈希）。
 
-### 4. 安全与运维
+### 4. 安全加固
 
-- **API Key DPAPI 加密**：`config.json` 不再明文保存密钥（Windows DPAPI 用户级加密，
-  仅同机同用户可解）；旧明文密钥首次启动自动迁移。
-- **升级回滚**：应用升级前备份 exe，升级失败自动恢复。
-- **迁移 / 升级健康检查**：启动后自动 `dump-config` 验证插件层与数据目录落位，
-  结果在日志页卡片展示。
-- **核心版本选择**：支持按发布版本（tag）更新或回退（不再只跟 master）。
-- **网络适配**：HTTP 代理 / npm registry 镜像 / GitHub 下载镜像三配置。
-- **日志页增强**：关键词过滤、错误/警告着色、一键复制、下载日志文件。
-- **中英双语**：界面语言一键切换并记忆；**本机实例面板**：查看同机运行实例与端口。
+- **桥方法白名单**：内部方法（`_` 开头）不再可经 HTTP 调用。
+- **桥调用仅 POST**：GET 桥派发移除，恶意网页无法用 `<img>`/表单标签跨站触发无参动作。
+- **DNS rebinding 防护**：Host 头必须是 127.0.0.1 / localhost / ::1，否则拒绝。
+- 请求体上限 2 MB；插件文件解析与 zip 导入（含核心源码 zip）增加目录穿越防护。
 
-### 5. 修复与生态
+### 5. 兼容性与生态
 
-- 修复安装包中文文件名乱码（旧版残留乱码文件启动时自动清理）。
-- dshmarket 商店升级 **1.33.0**（离线重打包，依赖内嵌，预装仍零网络）。
-- 核实：内置核心即上游最新（`dsh-0.1.1-rc.2`，master 顶点）；dsh-web 家族适配基线
-  `0.3.5` 即 npm 最新。
+- 旧配置的内置商店源自动指向随应用分发的 **dshmarket 1.33.0**（历史乱码标签自动修正）。
+- `dsh-doctor` 插件状态目录经 `DSH_DOCTOR_HOME` 重定向到实例数据目录（消除 C 盘 `~/.dsh-doctor` 残留与 rename EPERM）。
+- 外壳插件自定义入口（plugin.json `entry`）正确生效；内置**外壳插件开发套件**（可视化生成骨架并打包 zip）。
+- 新增回归测试 `tools/test-shell-fixes.py`（31 项：服务 / MIME / 插件入口 / 穿越防护 / 并发 / 断连 / 安全头 / store 自愈流程）。
 
 ## 二、版本变更
 
 | 模块 | 变更 |
 | --- | --- |
-| 双包发布 | `build.ps1/make-release.ps1/smoke-release.ps1` 支持 `-Flavor Lazy\|Minimal`；懒人包内置便携 Git（`scripts/download-portable-git.py`）；极简包省略运行时拷贝 |
-| 运行环境检测 | `homes.detect_tools()`（node/git/bash 内置/系统/缺失 + 包风味，缓存）；Git 目录注入核心与插件进程 PATH；极简模式优雅降级 |
-| 外壳插件 | 新增 `app/shellplugins.py`（双根扫描/zip 导入/启停/卸载）；`ui_server` `/plugin/<id>/` 静态服务（越权拦截）；`ShellPlugin` JS API；内置示例插件 |
-| 外观/桌宠 | 5 组内置外观（`app/ui/themes/`）；`registerTheme` 插件接口；桌宠挂载层与 `registerPet` 接口；示例桌宠插件 |
-| 托盘/自启 | 新增 `app/tray.py`（ctypes Shell_NotifyIcon，零依赖）；`poll_tray` 桥命令队列；关闭到托盘、开机自启开关 |
-| 核心更新 | `updater.list_core_releases()` + tag 构建/回退；代理 / npm 镜像 / GitHub 镜像全链注入 |
-| 安全 | 新增 `app/crypto.py`（DPAPI）；密钥加密迁移；升级 exe 备份回滚；健康检查（`logs/health.json`） |
-| UI | 工作台全宽铺满、沉浸记忆、加载指示、日志增强、中英双语（`app/ui/i18n.js`）、本机实例面板 |
-| 商店 | dshmarket 1.21.4 → 1.33.0（`scripts/rebundle-store-tgz.py` 离线重打包） |
-| 构建 | 压缩级别 9；核心构建后 `pnpm prune --prod` 裁剪发布体积；smoke 增加核心启动与中文名断言 |
-| 修复 | SFX 中文名乱码（A1）；BOM 编码统一（含中文的 ps1 全部 UTF-8 BOM） |
+| 插件更新 | 新增 `app/homes.py heal_profile_store()`：store 归属检测、旧 store 内容合并、依赖重建（快照 + 忽略构建脚本 + 残留清理），每次启动后台执行；`app/plugins.py` 遇 ERR_PNPM_UNEXPECTED_STORE 自动重建重试一次；`app/main.py` 服务器启动/插件操作等待自愈完成 |
+| 外壳服务 | `app/ui_server.py` 改用 ThreadingTCPServer 并发；断连读写静默；显式 MIME 映射表 |
+| 安全 | 桥方法白名单 + POST-only + Host 校验 + 2MB 请求体上限；`shellplugins.resolve` 分隔符感知包含检查；插件 zip 与核心源码 zip 成员路径校验 |
+| 外壳插件 | 自定义 `entry` 生效；zip 导入路径校验；plugin-dev-kit 开发套件随包 |
+| 商店/生态 | `app/store.py heal_store_sources()`：内置源 spec 对齐随包 dshmarket 版本 + 乱码标签修正；`DSH_DOCTOR_HOME` 实例化 |
+| UI | 核心版本号显示修复；`app/ui/app.js` 版本信息页与轮询渲染修正 |
+| 构建发布 | 版本 1.0.4；`smoke-release.ps1` 商店包通配检测 + 干跑拷贝排除 `data\store`；`upload-release.ps1` 只上传当前版本资产；含中文 ps1 保持 UTF-8 BOM |
+| 测试 | 新增 `tools/test-shell-fixes.py` 回归测试（31 项，可重复运行） |
 
 ## 三、安装包与升级包
 
 | 项目 | 说明 |
 | --- | --- |
-| 懒人包安装/升级 | `DeepSeekHarness-1.0.3-Setup.exe` / `-Update.exe`（内置 Node + Git，推荐） |
-| 极简包安装/升级 | `DeepSeekHarness-1.0.3-Minimal-Setup.exe` / `-Minimal-Update.exe`（无内置运行时） |
-| 校验 | `SHA256SUMS-1.0.3.txt` / `SHA256SUMS-1.0.3-Minimal.txt` 与各包 `.sha256` 文件随 Release 发布 |
+| 懒人包安装/升级 | `DeepSeekHarness-1.0.4-Setup.exe` / `-Update.exe`（内置 Node + Git，推荐） |
+| 极简包安装/升级 | `DeepSeekHarness-1.0.4-Minimal-Setup.exe` / `-Minimal-Update.exe`（无内置运行时） |
+| 校验 | `SHA256SUMS-1.0.4.txt` / `SHA256SUMS-1.0.4-Minimal.txt` 与各包 `.sha256` 文件随 Release 发布 |
 | 安装方式 | 双击安装包，选择安装目录（默认 `C:\DeepSeek Harness`），自动创建桌面快捷方式 |
 | 升级方式 | 外壳「关于」页一键下载安装（懒人包），或从 Releases 下载对应 `-Update.exe` 放在**安装目录内**双击运行 |
 | 环境要求 | Windows 10/11（内置 Microsoft Edge WebView2）；极简包需自装 Node.js LTS（可选 Git） |
@@ -143,3 +95,9 @@ DeepSeek Harness for Windows 是基于 [deepseek-ai/deepseek-harness](https://gi
 感谢 DeepSeek 团队开源的 [deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 项目、
 [dsh-market](https://github.com/dsh-market/dsh-market) 插件市场项目、[zhu1090093659/dsh-web](https://github.com/zhu1090093659/dsh-web)
 插件生态、Git for Windows，以及 pywebview、PyInstaller、Node.js、pnpm、7-Zip 等开源社区项目为本版本提供的支持。
+
+---
+
+# 历史版本
+
+# DeepSeek Harness for Windows v1.0.3 发布声明
