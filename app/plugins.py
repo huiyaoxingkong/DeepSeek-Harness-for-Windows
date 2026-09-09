@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -28,10 +29,11 @@ PROFILE = "web"
 class PluginManager:
     """List / install / remove / enable-disable profile plugins."""
 
-    def __init__(self, app_dir: str, settings, core) -> None:
+    def __init__(self, app_dir: str, settings, core, heal_done=None) -> None:
         self._app_dir = app_dir
         self._cfg = settings
         self._core = core
+        self._heal_done = heal_done
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._state: dict = {
@@ -163,6 +165,13 @@ class PluginManager:
             shutil.rmtree(out, ignore_errors=True)
         try:
             with zipfile.ZipFile(path) as zf:
+                # Zip-slip guard: reject absolute and parent-traversing
+                # members before extracting (defense in depth).
+                for info in zf.infolist():
+                    member = str(info.filename).replace("\\", "/")
+                    if (member.startswith("/") or re.match(r"^[A-Za-z]:", member)
+                            or ".." in member.split("/")):
+                        return None
                 zf.extractall(out)
         except (OSError, zipfile.BadZipFile):
             return None
@@ -213,6 +222,10 @@ class PluginManager:
     # ------------------------------------------------------------- runner
 
     def _run(self, args: list[str], phase: str) -> tuple[bool, str]:
+        # Never run pnpm concurrently with a profile-store heal: wait for it
+        # (instant when the store is already consistent).
+        if self._heal_done is not None and not self._heal_done.wait(timeout=1800):
+            return False, "插件依赖修复尚未完成，请稍后重试。"
         with self._lock:
             if self._state["phase"] != "idle":
                 return False, "已有插件操作正在进行，请稍候"
@@ -259,38 +272,64 @@ class PluginManager:
         return True, "操作已开始，进度见下方输出"
 
     def _run_worker(self, cmd: list[str], env: dict, phase: str) -> None:
-        try:
-            proc = subprocess.Popen(
-                cmd, cwd=self._app_dir, env=env,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            self._proc = proc
-            # pnpm grandchildren (node-gyp etc.) can inherit and hold the
-            # stdout pipe after the main process exits — a plain for-loop over
-            # stdout would never reach EOF. Collect on a daemon thread and
-            # finalize from the process exit instead.
-            collector = threading.Thread(
-                target=self._collect_output, args=(proc,), daemon=True)
-            collector.start()
+        data = homes.data_dir(self._app_dir, self._cfg)
+        home = os.environ.get("DSH_HOME") or homes.dsh_home(data)
+        proc = None
+        for attempt in (1, 2):
             try:
-                proc.wait(timeout=3600)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=10)
-            time.sleep(0.4)  # let the collector drain the tail
-            with self._lock:
-                if proc.returncode == 0:
+                proc = subprocess.Popen(
+                    cmd, cwd=self._app_dir, env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                self._proc = proc
+                # pnpm grandchildren (node-gyp etc.) can inherit and hold the
+                # stdout pipe after the main process exits — a plain for-loop
+                # over stdout would never reach EOF. Collect on a daemon
+                # thread and finalize from the process exit instead.
+                collector = threading.Thread(
+                    target=self._collect_output, args=(proc,), daemon=True)
+                collector.start()
+                try:
+                    proc.wait(timeout=3600)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                time.sleep(0.4)  # let the collector drain the tail
+            except OSError as exc:
+                with self._lock:
+                    self._state.update(phase="idle", message=f"无法启动插件命令: {exc}",
+                                       error=str(exc))
+                return
+            if proc.returncode == 0:
+                with self._lock:
                     self._state.update(phase="idle", message="操作完成，重启服务器后生效。")
-                else:
+                return
+            # The profile's node_modules is hard-linked against a foreign pnpm
+            # store (legacy-home installs, pre-1.0.3 pins): heal it against
+            # the instance store and retry the user's operation exactly once.
+            if attempt == 1 and self._store_mismatch():
+                log.info("pnpm store mismatch detected; healing profile and retrying once")
+                with self._lock:
                     self._state.update(
-                        phase="idle", message=f"操作失败（退出码 {proc.returncode}）",
-                        error=f"exit code {proc.returncode}")
-        except OSError as exc:
-            with self._lock:
-                self._state.update(phase="idle", message=f"无法启动插件命令: {exc}",
-                                   error=str(exc))
+                        message="检测到依赖与实例 pnpm store 不一致，正在自动重建后重试…")
+                try:
+                    result = homes.heal_profile_store(home, data, self._core.node_exe)
+                    log.info("profile store heal during plugin op: %s", result)
+                except Exception as exc:  # never hide the original failure
+                    log.exception("profile store heal failed during plugin op")
+                continue
+            break
+        with self._lock:
+            code = proc.returncode if proc is not None else 1
+            self._state.update(phase="idle", message=f"操作失败（退出码 {code}）",
+                               error=f"exit code {code}")
+
+    def _store_mismatch(self) -> bool:
+        with self._lock:
+            return any("ERR_PNPM_UNEXPECTED_STORE" in line
+                       for line in self._state["output"])
 
     def _collect_output(self, proc) -> None:
         assert proc.stdout is not None

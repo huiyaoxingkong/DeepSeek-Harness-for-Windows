@@ -8,7 +8,7 @@ import threading
 
 # Current launcher version; synced into config.json at startup so upgraded
 # installs report the real version instead of the pre-upgrade one.
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 
 
 class Settings:

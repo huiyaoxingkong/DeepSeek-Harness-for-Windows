@@ -11,7 +11,7 @@ if not exist "%~dp0ui\.version" (
   if exist "%~dp0ui" rename "%~dp0ui" "ui-backup"
   if exist "%~dp0_internal\ui" robocopy "%~dp0_internal\ui" "%~dp0ui" /E /NFL /NDL /NJH /NJS /NP >nul
   if not exist "%~dp0ui" robocopy "%~dp0ui-backup" "%~dp0ui" /E /NFL /NDL /NJH /NJS /NP >nul
-  echo 1.0.3 > "%~dp0ui\.version"
+  echo 1.0.4 > "%~dp0ui\.version"
 )
 rem 冒烟测试标记：存在 no-launch.flag 时不建快捷方式、不启动
 if exist "%~dp0no-launch.flag" exit /b 0

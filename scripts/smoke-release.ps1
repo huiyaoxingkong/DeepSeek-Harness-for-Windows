@@ -3,7 +3,7 @@
 #   - upgrade dry-run: run the Update exe inside a COPY of the install dir
 #     with no-launch.flag (post-update.bat bails out early)
 param(
-    [string]$Version = "1.0.3",
+    [string]$Version = "1.0.4",
     [ValidateSet("Lazy", "Minimal")]
     [string]$Flavor = "Lazy"
 )
@@ -25,7 +25,7 @@ $setupOut = Join-Path $work "setup-content"
 & $sevenZip x $setupExe "-o$setupOut" -y -bso0 -bsp0
 if ($LASTEXITCODE -ne 0) { throw "7z cannot open Setup.exe" }
 $setupMust = @("DeepSeek Harness.exe", "core\apps\cli\lib\bin.js",
-               "store\dshmarket-1.33.0.tgz", "post-install.bat", "ui\index.html",
+               "post-install.bat", "ui\index.html",
                "启动 DeepSeek Harness.bat", "停止 DeepSeek Harness.bat",
                "创建桌面快捷方式.ps1", "stop-core.ps1")
 if ($Flavor -eq "Lazy") {
@@ -35,6 +35,11 @@ if ($Flavor -eq "Lazy") {
 }
 foreach ($p in $setupMust) {
     if (-not (Test-Path (Join-Path $setupOut $p))) { throw "Setup payload missing: $p" }
+}
+# Bundled store plugin tarball must ship (name carries the version, so match
+# the pattern instead of hardcoding).
+if (-not (Get-ChildItem (Join-Path $setupOut "store") -Filter "dshmarket-*.tgz" -File -ErrorAction SilentlyContinue)) {
+    throw "Setup payload missing bundled dshmarket tarball under store\"
 }
 # Note: the shipped-core boot check lives in build.ps1 (runs against dist/)
 # because console 7z cannot fully extract very long .pnpm paths here, while

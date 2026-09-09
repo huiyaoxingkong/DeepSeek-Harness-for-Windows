@@ -64,6 +64,7 @@ document.querySelectorAll(".nav-item").forEach(btn => {
 async function refreshState() {
   const state = await callApi("get_state");
   const { app, server, update } = state;
+  lastCoreVersion = server.coreVersion || "";
   const dot = $("sidebar-status");
   const running = server.running;
   dot.classList.toggle("on", running);
@@ -873,6 +874,7 @@ $("btn-add-store").addEventListener("click", async () => {
 
 let updatePollTimer = null;
 let lastUpdateRender = "";
+let lastCoreVersion = "";
 
 function isUpdateBusy(phase) {
   return ["checking", "downloading", "installing", "building", "swapping"].includes(phase);
@@ -886,21 +888,23 @@ function stopUpdatePoll() {
 async function renderLocalUpdate() {
   const state = await refreshState();
   const upd = state.update || {};
-  renderUpdate({ data: upd }, true);
+  renderUpdate({ data: upd }, true, state.server.coreVersion);
 }
 
 /* 幂等渲染：内容未变化时不做任何 DOM 写入 */
-function renderUpdate(res, silent) {
+function renderUpdate(res, silent, coreVersion) {
   const data = res.data || res || {};
   const remote = data.remote || null;
   const local = data.local || null;
   const busy = isUpdateBusy(data.phase);
+  const cv = coreVersion || lastCoreVersion || "";
   const fingerprint = JSON.stringify([local, remote, data.phase,
-    Math.round((data.progress || 0) * 100), data.message || ""]);
+    Math.round((data.progress || 0) * 100), data.message || "", cv]);
   const changed = fingerprint !== lastUpdateRender;
   lastUpdateRender = fingerprint;
   if (changed) {
-    $("local-version").textContent = local ? (local.commit || "-") : "（未记录）";
+    $("local-version").textContent = cv
+      || (local ? (local.commit || "-") : "（未记录）");
     $("local-commit").textContent = local ? (local.commit || "-") : "-";
     $("local-date").textContent = local ? (local.updatedAt || "-") : "-";
     $("remote-commit").textContent = remote ? remote.commit : "-";

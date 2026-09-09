@@ -56,7 +56,14 @@ class Bridge:
         self._core = core_api.CoreController(APP_DIR, self._cfg)
         self._updater = updater.CoreUpdater(APP_DIR, self._cfg, self._core)
         self._app_updater = updater.AppUpdateController(APP_DIR, self._cfg)
-        self._plugins = plugins.PluginManager(APP_DIR, self._cfg, self._core)
+        # The profile can be linked against a foreign pnpm store (legacy-home
+        # installs, pre-1.0.3 pins). Heal it in the background on every
+        # launch; server start and plugin operations wait on the event so the
+        # core never boots against a half-rebuilt plugin tree. The event must
+        # exist before PluginManager is constructed (it references it).
+        self._heal_done = threading.Event()
+        self._plugins = plugins.PluginManager(
+            APP_DIR, self._cfg, self._core, heal_done=self._heal_done)
         self._store = store.StoreManager(APP_DIR, self._cfg, self._plugins)
         self._shell = shellplugins.ShellPluginManager(APP_DIR, self._cfg)
         self._tray = tray.TrayController(APP_DIR)
@@ -65,6 +72,18 @@ class Bridge:
         # archive extraction; restore them before the server can start.
         self._junctions_ok = threading.Event()
         threading.Thread(target=self._ensure_junctions, daemon=True).start()
+        threading.Thread(target=self._heal_profile, daemon=True).start()
+
+    def _heal_profile(self) -> None:
+        try:
+            data = homes.data_dir(APP_DIR, self._cfg)
+            home = os.environ.get("DSH_HOME") or homes.dsh_home(data)
+            result = homes.heal_profile_store(home, data, self._core.node_exe)
+            log.info("profile store heal: %s", result)
+        except Exception as exc:  # never crash the launch thread
+            log.exception("profile store heal crashed")
+        finally:
+            self._heal_done.set()
 
     def _scripts_dir(self) -> str:
         bundled = os.path.join(APP_DIR, "scripts", "restore-junctions.ps1")
@@ -230,6 +249,11 @@ class Bridge:
     def start_server(self) -> dict:
         if not self._wait_junctions():
             return {"ok": False, "message": "核心组件链接恢复超时，请重启应用重试。"}
+        # Never boot the core against a half-rebuilt plugin tree: wait for the
+        # profile store heal (instant when the store is already consistent).
+        if not self._heal_done.wait(timeout=1800):
+            return {"ok": False,
+                    "message": "插件依赖修复超时，请查看日志后重启应用重试。"}
         ok, msg = self._core.start()
         return {"ok": ok, "message": msg, "port": self._cfg.get("port", 3080)}
 
@@ -563,6 +587,10 @@ def main() -> None:
         cfg.set("app_version", settings.VERSION)
         cfg.save()
         log.info("app_version synced to %s", settings.VERSION)
+    # B4: upgrade stale builtin store sources in old configs — fix the
+    # GBK-mojibake label left by pre-1.0.3 writers and repoint the builtin
+    # spec at the bundled store tarball version.
+    store.heal_store_sources(cfg, APP_DIR)
     # D3: migrate a legacy plaintext API key to DPAPI-encrypted storage once.
     raw_key = cfg.get("api_key", "") or ""
     if raw_key and not raw_key.startswith("dpapi:"):
@@ -583,12 +611,6 @@ def main() -> None:
     core_stub = core_api.CoreController(APP_DIR, cfg)
     if homes.detect_tools(APP_DIR, cfg)["node"]["mode"] == "bundled":
         homes.ensure_dsh_shim(core_stub.runtime_dir, core_stub.bin_js)
-    # Migration excluded node_modules (legacy store links): reinstall the
-    # profile against the instance store, in the background.
-    if migration.get("moved"):
-        threading.Thread(target=homes.reinstall_profile,
-                         args=(home, data_dir, core_stub.node_exe),
-                         daemon=True).start()
     # A6: verify the migrated/upgraded profile once, in the background.
     threading.Thread(target=homes.run_health_check,
                      args=(APP_DIR, cfg, core_stub.node_exe, core_stub.bin_js),

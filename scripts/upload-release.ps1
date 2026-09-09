@@ -1,13 +1,13 @@
 ﻿# Upload v<Version> source + release artifacts to GitHub.
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.3
+#   powershell -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.4
 #
 # Steps: tag + push source, create the GitHub Release, upload Setup/Update
 # exes and SHA256 files. Auth comes from git's credential helper (the same
 # credential that git push uses); pass -Token to override. Network calls
 # retry with backoff because GitHub can be flaky from some networks.
 param(
-    [string]$Version = "1.0.3",
+    [string]$Version = "1.0.4",
     [string]$Tag = "v$Version",
     [string]$Token = "",
     [switch]$SkipPush
@@ -65,7 +65,7 @@ if (-not $SkipPush) {
     Write-Host "=== Pushing source + tag $Tag ===" -ForegroundColor Cyan
     git -C $root add -A
     git -C $root -c user.name="DSH Desktop" -c user.email="dsh-desktop@users.noreply.github.com" `
-        commit -m "v${Version}: dual-package release, shell plugin system, themes/pet, tray, DPAPI, tag updates, mirrors, health check, i18n" `
+        commit -m "v${Version}: pnpm store self-heal for profile plugins, concurrent shell UI server, MIME/plugin-entry/security fixes" `
         --quiet 2>$null
     if ($LASTEXITCODE -ne 0) { Write-Host "  (commit may already exist, continuing)" }
     Invoke-Retry { git -C $root push origin main }
@@ -108,8 +108,12 @@ if (-not $releaseId) { throw "could not determine release id" }
 Write-Host "  release id: $releaseId"
 
 Write-Host "=== Uploading assets ===" -ForegroundColor Cyan
-$assets = Get-ChildItem $releaseDir -File | Sort-Object Name
-if (-not $assets) { throw "no release artifacts in $releaseDir" }
+# Only this version's artifacts: a release\ dir can hold leftovers from
+# earlier releases, which must never be attached to the new one.
+$assets = Get-ChildItem $releaseDir -File | Sort-Object Name |
+    Where-Object { $_.Name -like "DeepSeekHarness-$Version*" -or
+                   $_.Name -like "SHA256SUMS-$Version*" }
+if (-not $assets) { throw "no release artifacts for $Version in $releaseDir" }
 foreach ($file in $assets) {
     $name = $file.Name
     $escaped = [uri]::EscapeDataString($name)

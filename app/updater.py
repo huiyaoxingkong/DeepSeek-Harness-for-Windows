@@ -11,6 +11,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -405,6 +406,13 @@ class CoreUpdater:
     def _extract(self, zip_path: str) -> str:
         out = os.path.join(self._work_dir, "src")
         with zipfile.ZipFile(zip_path) as zf:
+            # Zip-slip guard: reject absolute and parent-traversing members
+            # before extractall (defense in depth on top of CPython's fix).
+            for info in zf.infolist():
+                name = str(info.filename).replace("\\", "/")
+                if (name.startswith("/") or re.match(r"^[A-Za-z]:", name)
+                        or ".." in name.split("/")):
+                    raise ValueError(f"压缩包含不安全路径（{info.filename}），已拒绝导入。")
             top = zf.namelist()[0].split("/", 1)[0]
             zf.extractall(out)
         src_dir = os.path.join(out, top)

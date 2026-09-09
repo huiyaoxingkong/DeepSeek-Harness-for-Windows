@@ -1,12 +1,12 @@
 ﻿# One-click build: portable Node runtime -> core build -> PyInstaller exe -> dist/
 #
-# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller] [-Version 1.0.3] [-Flavor Lazy|Minimal]
+# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller] [-Version 1.0.4] [-Flavor Lazy|Minimal]
 #   Lazy    (default) ships portable Node + Git under runtime\ (self-contained)
 #   Minimal ships no runtimes: the app uses system Node/Git and degrades gracefully
 param(
     [switch]$SkipCoreBuild,
     [switch]$SkipPyInstaller,
-    [string]$Version = "1.0.3",
+    [string]$Version = "1.0.4",
     [ValidateSet("Lazy", "Minimal")]
     [string]$Flavor = "Lazy"
 )

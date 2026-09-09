@@ -76,6 +76,69 @@ def version_newer(newer: str, older: str) -> bool:
     return len(n_parts) > len(o_parts)
 
 
+# UTF-8 bytes of the Chinese label mis-decoded as GBK by pre-1.0.3 writers;
+# reversed generically below, this is the only known occurrence.
+_STORE_TGZ_RE = re.compile(
+    r"^store[\\/](?P<prefix>[^\\/]+?)(?P<version>\d+(?:\.\d+)+)\.tgz$",
+    re.IGNORECASE)
+
+
+def _fix_mojibake(text: str) -> str:
+    """Reverse the classic UTF-8-as-GBK mojibake (插件 -> 鎻掍欢)."""
+    try:
+        fixed = text.encode("gbk").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError, LookupError):
+        return text
+    return fixed if fixed != text else text
+
+
+def heal_store_sources(cfg, app_dir: str) -> bool:
+    """Upgrade stale store_sources entries in existing configs.
+
+    - fix mojibake labels written by pre-1.0.3 config writers;
+    - repoint the builtin source's bundled-tarball spec at the highest
+      ``dshmarket-*.tgz`` version present under ``<app>\\store`` so upgraded
+      installs preseed the same store version a fresh install gets.
+
+    Only the builtin source is repointed (user-added sources keep their spec).
+    Returns True when the config was rewritten.
+    """
+    sources = cfg.get("store_sources") or []
+    changed = False
+    for src in sources:
+        if not isinstance(src, dict) or not src.get("name"):
+            continue
+        label = str(src.get("label") or "")
+        fixed_label = _fix_mojibake(label)
+        if fixed_label != label:
+            src["label"] = fixed_label
+            changed = True
+        if not (src.get("builtin") and src.get("name") == "dshmarket"):
+            continue
+        spec = str(src.get("spec") or "").strip()
+        match = _STORE_TGZ_RE.match(spec)
+        if not match:
+            continue
+        best, best_ver = "", match.group("version")
+        store_dir = os.path.join(app_dir, "store")
+        if os.path.isdir(store_dir):
+            prefix = match.group("prefix")
+            for fname in os.listdir(store_dir):
+                m2 = re.match(
+                    rf"^{re.escape(prefix)}(?P<v>\d+(?:\.\d+)+)\.tgz$",
+                    fname, re.IGNORECASE)
+                if m2 and version_newer(m2.group("v"), best_ver):
+                    best, best_ver = fname, m2.group("v")
+        if best and best_ver != match.group("version"):
+            src["spec"] = os.path.join("store", best)
+            changed = True
+    if changed:
+        cfg.set("store_sources", sources)
+        cfg.save()
+        log.info("store sources healed: %s", sources)
+    return changed
+
+
 class StoreManager:
     """List / add / remove / enable-disable store sources + first-run preseed."""
 

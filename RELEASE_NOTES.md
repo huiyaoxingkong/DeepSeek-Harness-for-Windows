@@ -1,3 +1,29 @@
+# DeepSeek Harness for Windows v1.0.4 发布声明
+
+**项目主页**：https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows
+**版本标签**：v1.0.4
+
+本版本为稳定性修复版，聚焦排查结论中的四类问题：
+
+1. **内部插件更新失败（ERR_PNPM_UNEXPECTED_STORE）已修复**：旧实例的 web profile
+   依赖在旧路径（`~/.dsh`）时期链接到了用户全局 pnpm store，与 1.0.3 起强制使用的
+   实例内 store（`<data>\store`）不一致，导致插件安装 / 更新 / 卸载全部报错。现在
+   启动时自动检测 store 归属：不一致时把旧 store 的包内容合并进实例 store（同为
+   pnpm 11 布局，内容寻址文件可直接复用，无需重新下载）、重建 profile 依赖；
+   插件操作过程中遇到该错误也会自动重建并重试一次，用户无需手动处理。
+2. **外壳与内部插件连接稳定性**：外壳 UI 服务器改为并发处理（ThreadingHTTPServer），
+   慢速桥接调用（核心版本列表 / 商店目录抓取）不再阻塞外壳插件清单等其他请求；
+   客户端断连不再刷 ConnectionAborted 错误日志；dsh-doctor 插件状态目录经
+   `DSH_DOCTOR_HOME` 重定向到实例数据目录（消除 C 盘 `~/.dsh-doctor` 残留与
+   rename EPERM）。
+3. **外壳显示问题修复**：静态文件显式 MIME 映射（WebView2 严格 MIME 检查下外壳
+   插件脚本与主题不再偶发不加载）；版本信息页「当前核心版本」显示真实版本号；
+   内置商店源历史乱码标签自动修正并指向随包分发的 dshmarket 1.33.0。
+4. **外壳插件兼容与安全**：plugin.json 自定义 `entry` 字段正确生效；插件文件解析
+   与 zip 导入增加路径穿越防护。
+
+---
+
 # DeepSeek Harness for Windows v1.0.3 发布声明
 
 **发布日期**：2026-08-27

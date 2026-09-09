@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import shutil
+import urllib.parse
 import zipfile
 
 log = logging.getLogger("shellplugins")
@@ -64,11 +65,14 @@ class ShellPluginManager:
         return os.path.join(data, "shell-plugins")
 
     def resolve(self, plugin_id: str, relpath: str = "") -> str | None:
-        """Resolve a plugin file; the user root shadows the bundled one."""
+        """Resolve a plugin file; the user root shadows the bundled one.
+        The containment check is separator-aware so ``<id>`` never matches a
+        sibling directory like ``<id>-evil``."""
         for root in (self.user_root(), self.bundled_root()):
-            base = os.path.join(root, plugin_id)
+            base = os.path.normpath(os.path.join(root, plugin_id))
             full = os.path.normpath(os.path.join(base, relpath))
-            if (os.path.isfile(full) and full.startswith(os.path.normpath(base))):
+            if os.path.isfile(full) and (full == base
+                                         or full.startswith(base + os.sep)):
                 return full
         return None
 
@@ -99,6 +103,7 @@ class ShellPluginManager:
                 "description": str(manifest.get("description") or ""),
                 "builtin": builtin,
                 "root": full,
+                "entry": str(manifest.get("entry") or "main.js"),
                 "valid": os.path.isfile(entry_js),
                 "enabled": bool(enabled_cfg.get(plugin_id, {}).get(
                     "enabled", True) if isinstance(
@@ -112,14 +117,20 @@ class ShellPluginManager:
         return {"plugins": plugins, "userDir": self.user_root()}
 
     def manifest(self) -> dict:
-        """Enabled plugins for the UI loader: id + entry URL (relative)."""
+        """Enabled plugins for the UI loader: id + entry URL (relative).
+
+        The entry URL honors a custom ``entry`` file from plugin.json — a
+        plugin that names ``index.js`` must not be served a hardcoded
+        ``main.js``."""
         entries = []
         for p in self.list()["plugins"]:
             if p["enabled"] and p["valid"]:
+                entry = urllib.parse.quote(str(p.get("entry") or "main.js"),
+                                           safe="._-")
                 entries.append({
                     "id": p["id"],
                     "name": p["name"],
-                    "entry": f"/plugin/{p['id']}/main.js",
+                    "entry": f"/plugin/{p['id']}/{entry}",
                 })
         return {"plugins": entries}
 
@@ -151,6 +162,11 @@ class ShellPluginManager:
         os.makedirs(staging, exist_ok=True)
         try:
             with zipfile.ZipFile(path) as zf:
+                for info in zf.infolist():
+                    name = str(info.filename).replace("\\", "/")
+                    if (name.startswith("/") or re.match(r"^[A-Za-z]:", name)
+                            or ".." in name.split("/")):
+                        return False, f"压缩包内含不安全路径（{info.filename}），已拒绝导入。"
                 zf.extractall(staging)
             candidates = []
             for name in os.listdir(staging):

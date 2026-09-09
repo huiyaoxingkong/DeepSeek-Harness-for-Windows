@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 
 log = logging.getLogger("homes")
 
@@ -78,11 +79,15 @@ def apply_home_env(app_dir: str, cfg) -> tuple[str, str]:
 
     Must run before any core/plugin operation; every child process inherits
     the variable, which is exactly what keeps core and plugins in agreement.
+    DSH_DOCTOR_HOME is set alongside it so the dsh-doctor plugin keeps its
+    state inside the instance instead of ``~/.dsh-doctor`` (portable data,
+    no C-drive footprint, no antivirus/sync lock contention on the rename).
     """
     data = data_dir(app_dir, cfg)
     home = dsh_home(data)
     os.makedirs(home, exist_ok=True)
     os.environ["DSH_HOME"] = home
+    os.environ["DSH_DOCTOR_HOME"] = os.path.join(home, ".dsh-doctor")
     return data, home
 
 
@@ -157,25 +162,124 @@ def migrate_legacy_home(app_dir: str, cfg) -> dict:
     return result
 
 
-def reinstall_profile(home: str, data: str, node_exe: str) -> None:
-    """Reinstall the migrated profile against the instance pnpm store.
+def _modules_yaml_store_dir(profile: str) -> str:
+    """The ``storeDir`` recorded in the profile's .modules.yaml ('' when
+    absent or unreadable). This is the store the current node_modules is
+    hard-linked against — the one piece of state needed to detect the
+    ERR_PNPM_UNEXPECTED_STORE mismatch before pnpm hits it."""
+    path = os.path.join(profile, "node_modules", ".modules.yaml")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+    match = re.search(r'"storeDir"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if not match:
+        return ""
+    return match.group(1).replace("\\\\", "\\")
 
-    The migration excludes node_modules (legacy store links), so run
-    ``pnpm install`` in the profile when its manifest still lists deps.
-    Best-effort, runs in a background thread, and tolerates no-network
-    environments (the instance store usually has the tarballs cached).
+
+def _merge_store_files(src_store: str, dst_store: str) -> tuple[int, int]:
+    """Copy missing content-addressed files from one pnpm store into another.
+
+    Only the ``files`` tree is merged: content is addressed by its own hash,
+    so files from the same pnpm major's layout are interchangeable across
+    store locations. The per-store ``index.db`` is deliberately left alone
+    (it keys package metadata to a concrete store path); the instance pnpm
+    rebuilds its view lazily, reusing the merged content instead of
+    re-downloading it. Returns (copied, skipped).
     """
+    src_files = os.path.join(src_store, "files")
+    dst_files = os.path.join(dst_store, "files")
+    if not os.path.isdir(src_files):
+        return 0, 0
+    copied = skipped = 0
+    for dirpath, _dirnames, filenames in os.walk(src_files):
+        rel = os.path.relpath(dirpath, src_files)
+        for name in filenames:
+            src = os.path.join(dirpath, name)
+            dst = os.path.join(dst_files, rel, name)
+            if os.path.isfile(dst):
+                skipped += 1
+                continue
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                copied += 1
+            except OSError:
+                log.warning("store merge copy failed: %s", src)
+    return copied, skipped
+
+
+def heal_profile_store(home: str, data: str, node_exe: str) -> dict:
+    """Guarantee the web profile's node_modules is linked from the instance
+    pnpm store (``PNPM_HOME=<data>`` derives the store at ``<data>\\store``).
+
+    Two situations produce a profile linked against a foreign store: the
+    legacy-home migration excluded node_modules (the reinstall never ran, or
+    ran before this pin existed), and pre-1.0.3 installs ran pnpm without the
+    instance store. Every pnpm op then fails with ERR_PNPM_UNEXPECTED_STORE.
+    The heal is: merge the foreign store's content into the instance store
+    (same layout version, so content-addressed files are interchangeable),
+    drop the foreign-linked node_modules, and reinstall. It is cheap when the
+    state is already consistent (one small file read) and never raises —
+    designed to run in a background thread on every launch.
+    """
+    result: dict = {"ok": True, "skipped": "", "rebuilt": False,
+                    "mergedCopied": 0, "mergedSkipped": 0}
     profile = os.path.join(home, "profiles", "web")
     manifest = os.path.join(profile, "package.json")
     if not os.path.isfile(manifest):
-        return
+        result["skipped"] = "no-profile"
+        return result
     try:
         with open(manifest, "r", encoding="utf-8") as fh:
             deps = json.load(fh).get("dependencies") or {}
-    except (OSError, ValueError):
-        return
-    if not deps or os.path.isdir(os.path.join(profile, "node_modules")):
-        return
+    except (OSError, ValueError) as exc:
+        result.update(ok=False, error=f"manifest unreadable: {exc}")
+        return result
+    if not deps:
+        result["skipped"] = "no-deps"
+        return result
+    modules_dir = os.path.join(profile, "node_modules")
+    store_prefix = os.path.normcase(os.path.join(data, "store"))
+    foreign = _modules_yaml_store_dir(profile) if os.path.isdir(modules_dir) else ""
+    if foreign and (os.path.normcase(foreign) == store_prefix
+                    or os.path.normcase(foreign).startswith(store_prefix + os.sep)):
+        result["skipped"] = "store-ok"
+        return result
+    if os.path.isdir(modules_dir):
+        log.info("profile store heal: node_modules linked from %s, instance "
+                 "store is %s — rebuilding", foreign or "(unknown)", store_prefix)
+        if foreign and os.path.isdir(foreign):
+            dst_store = os.path.join(data, "store", os.path.basename(foreign))
+            copied, skipped = _merge_store_files(foreign, dst_store)
+            result.update(mergedCopied=copied, mergedSkipped=skipped)
+            log.info("profile store heal: merged %d files (%d present) from %s",
+                     copied, skipped, foreign)
+        # Snapshot manifest + lockfile before the rebuild: a rebuild prunes
+        # packages whose manifest entries were dropped by an earlier failed
+        # operation, and the snapshot makes that loss recoverable.
+        snapshot_dir = os.path.join(data, "store-heal-snapshot")
+        try:
+            os.makedirs(snapshot_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            for name in ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"):
+                src = os.path.join(profile, name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(snapshot_dir, f"{name}.{stamp}"))
+        except OSError as exc:
+            log.warning("profile store heal: snapshot failed: %s", exc)
+        if not _remove_tree(modules_dir):
+            result.update(ok=False, error="node_modules removal failed (files locked)")
+            return result
+    # Install against the instance store. Runs once per inconsistent state;
+    # the merged store content keeps it (mostly) offline. Build scripts are
+    # ignored to mirror the profile's historical install state (node-pty /
+    # cpu-features compile and cloudflared download otherwise stall headless
+    # installs for tens of minutes); prebuilt binaries ship in the tarballs.
     pnpm = os.path.join(os.path.dirname(node_exe), "pnpm.cmd")
     if not os.path.isfile(pnpm):
         pnpm = "pnpm"
@@ -187,17 +291,32 @@ def reinstall_profile(home: str, data: str, node_exe: str) -> None:
     env["npm_config_fetch_retries"] = "5"
     env["pnpm_config_fetch_timeout"] = "600000"
     env["pnpm_config_fetch_retries"] = "5"
-    log.info("profile reinstall after migration: %s", profile)
+    log.info("profile store heal: pnpm install in %s", profile)
     try:
         proc = subprocess.run(
-            [pnpm, "install", "--no-frozen-lockfile"],
+            [pnpm, "install", "--no-frozen-lockfile", "--ignore-scripts"],
             cwd=profile, env=env, capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=1800,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        log.info("profile reinstall exit: %d", proc.returncode)
+        log.info("profile store heal exit: %d", proc.returncode)
+        if proc.returncode != 0:
+            detail = (proc.stdout or "")[-400:] + (proc.stderr or "")[-400:]
+            result.update(ok=False, error=f"pnpm exit {proc.returncode}",
+                          detail=detail.strip() or "")
+            return result
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("profile reinstall failed: %s", exc)
+        result.update(ok=False, error=str(exc))
+        return result
+    result["rebuilt"] = True
+    # Leftovers from an earlier rename-based rebuild: locked native files may
+    # have survived; retry once now that the fresh tree is in place.
+    leftover = os.path.join(profile, "node_modules.old")
+    if os.path.isdir(leftover):
+        _remove_tree(leftover)
+        log.info("profile store heal: leftover node_modules.old cleaned: %s",
+                 not os.path.isdir(leftover))
+    return result
 
 
 def _migrate_doctor_state(home: str) -> None:
