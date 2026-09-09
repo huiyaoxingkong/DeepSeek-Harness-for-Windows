@@ -1,11 +1,16 @@
 ﻿# Upload v<Version> source + release artifacts to GitHub.
 #
-#   powershell -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.4
+#   pwsh -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.4
 #
 # Steps: tag + push source, create the GitHub Release, upload Setup/Update
 # exes and SHA256 files. Auth comes from git's credential helper (the same
-# credential that git push uses); pass -Token to override. Network calls
-# retry with backoff because GitHub can be flaky from some networks.
+# credential that git push uses); pass -Token to override or set the
+# GITHUB_TOKEN environment variable. Network calls retry with backoff
+# because GitHub can be flaky from some networks.
+#
+# Requires PowerShell 7: Windows PowerShell 5.1's JSON serialization for the
+# release body produces payloads GitHub rejects ("Invalid request"), even
+# through --data-binary files.
 param(
     [string]$Version = "1.0.4",
     [string]$Tag = "v$Version",
@@ -14,6 +19,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+    throw "upload-release.ps1 requires PowerShell 7 (pwsh): PS 5.1 JSON payloads are rejected by the GitHub API. Run: pwsh -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version $Version"
+}
 $root = Split-Path -Parent $PSScriptRoot
 $repo = "huiyaoxingkong/DeepSeek-Harness-for-Windows"
 $api = "https://api.github.com/repos/$repo"
