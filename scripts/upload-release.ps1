@@ -99,7 +99,10 @@ $token = Get-GitHubToken
 Write-Host "=== Creating GitHub Release $Tag ===" -ForegroundColor Cyan
 
 $notes = Join-Path $root "RELEASE_NOTES.md"
-$body = if (Test-Path $notes) { Get-Content $notes -Raw } else { "DeepSeek Harness for Windows $Version" }
+# Read as UTF-8 explicitly: the notes are BOM-less UTF-8 and PS 5.1 would
+# otherwise decode them as ANSI (mojibake body + control chars => GitHub
+# rejects with "Invalid request").
+$body = if (Test-Path $notes) { Get-Content $notes -Raw -Encoding UTF8 } else { "DeepSeek Harness for Windows $Version" }
 $payload = @{
     tag_name         = $Tag
     target_commitish = "main"
