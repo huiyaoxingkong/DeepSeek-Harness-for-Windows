@@ -78,7 +78,10 @@ if ($Flavor -eq "Minimal") {
 }
 
 Write-Host "  - copying core (built dsh source, junction-aware)..."
-if (-not $SkipCoreBuild) {
+# -SkipCoreBuild reuses the built core checkout, but the dist was just
+# purged above — copy the core whenever it is missing from dist, not only
+# after a fresh core build.
+if (-not $SkipCoreBuild -or -not (Test-Path (Join-Path $dist "core\apps\cli\lib\bin.js"))) {
     robocopy (Join-Path $root "core") (Join-Path $dist "core") /E /XJ /MT:32 /NFL /NDL /NJH /NJS /NC /NS /NP `
         /XD .git .dsh-build | Out-Null
     if ($LASTEXITCODE -gt 7) { throw "robocopy core failed ($LASTEXITCODE)" }
@@ -89,7 +92,7 @@ if (-not $SkipCoreBuild) {
     New-Item -ItemType Directory -Path (Join-Path $dist "scripts") -Force | Out-Null
     Copy-Item (Join-Path $PSScriptRoot "scripts\restore-junctions.ps1") (Join-Path $dist "scripts") -Force
 } else {
-    Write-Host "  - core copy skipped (use -SkipCoreBuild only when core already present)"
+    Write-Host "  - core already present in dist; copy skipped"
 }
 
 New-Item -ItemType Directory -Path (Join-Path $dist "logs") -Force | Out-Null
