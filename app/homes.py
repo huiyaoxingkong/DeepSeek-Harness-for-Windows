@@ -88,6 +88,24 @@ def apply_home_env(app_dir: str, cfg) -> tuple[str, str]:
     os.makedirs(home, exist_ok=True)
     os.environ["DSH_HOME"] = home
     os.environ["DSH_DOCTOR_HOME"] = os.path.join(home, ".dsh-doctor")
+    # The bundled Python has no CA source of its own and cannot always load
+    # the Windows certificate store; without a CA bundle every HTTPS call
+    # (GitHub API checks, downloads) fails with CERTIFICATE_VERIFY_FAILED.
+    # Pin SSL_CERT_FILE to a bundle shipped with the app; a user-provided
+    # value wins (they may have their own trust store).
+    if not os.environ.get("SSL_CERT_FILE"):
+        for candidate in (
+            os.path.join(app_dir, "cacert.pem"),
+            os.path.join(app_dir, "_internal", "certifi", "cacert.pem"),
+            os.path.join(app_dir, "runtime", "git", "mingw64", "etc",
+                         "ssl", "certs", "ca-bundle.crt"),
+            os.path.join(app_dir, "runtime", "git", "usr", "ssl",
+                         "certs", "ca-bundle.crt"),
+        ):
+            if os.path.isfile(candidate):
+                os.environ["SSL_CERT_FILE"] = candidate
+                log.info("SSL_CERT_FILE -> %s", candidate)
+                break
     return data, home
 
 
