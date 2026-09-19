@@ -1,4 +1,4 @@
-"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
+﻿"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
 
 Covers the three defect families fixed in 1.0.5:
 
@@ -946,6 +946,44 @@ def test_close_confirmation_ui_is_complete() -> None:
     check("close_confirm has a default", '"close_confirm": True' in settings_defaults)
 
 
+@case
+def test_script_encodings_match_their_interpreters() -> None:
+    """PowerShell needs a UTF-8 BOM; cmd batch files must be ANSI.
+
+    Windows PowerShell 5.1 (the interpreter the release scripts run under)
+    decodes a BOM-less file as ANSI, so a UTF-8 script with Chinese literals —
+    the payload checks compare Chinese file names — silently becomes mojibake
+    and reports healthy packages as broken. cmd.exe reads .bat in the console
+    code page, so those must stay ANSI (no BOM).
+    """
+    ps1 = [os.path.join(REPO, "build.ps1")]
+    ps1 += [os.path.join(REPO, "scripts", n)
+            for n in sorted(os.listdir(os.path.join(REPO, "scripts")))
+            if n.endswith(".ps1")]
+    for path in ps1:
+        raw = open(path, "rb").read()
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            check(f"{os.path.basename(path)} is valid UTF-8", False)
+            continue
+        has_non_ascii = any(ord(ch) > 127 for ch in text)
+        has_bom = raw.startswith(b"\xef\xbb\xbf")
+        check(f"{os.path.basename(path)}: UTF-8 BOM when it has non-ASCII text",
+              has_bom or not has_non_ascii,
+              "BOM missing -> PowerShell 5.1 would read it as ANSI" if has_non_ascii else "")
+
+    for name in ("post-update.bat", "post-install.bat"):
+        raw = open(os.path.join(REPO, name), "rb").read()
+        check(f"{name} has no UTF-8 BOM (cmd reads ANSI)", not raw.startswith(b"\xef\xbb\xbf"))
+        try:
+            raw.decode("mbcs")
+            decodable = True
+        except (UnicodeDecodeError, LookupError):
+            decodable = False
+        check(f"{name} decodes in the console code page", decodable)
+
+
 # ---------------------------------------------------------------------- main
 
 
@@ -978,6 +1016,7 @@ def main() -> int:
         test_shell_ui_sync_never_downgrades,
         test_console_output_decoding_never_crashes,
         test_immersive_is_gated_on_the_workspace_page,
+        test_script_encodings_match_their_interpreters,
         test_close_saves_state_and_stops_the_core,
         test_close_confirmation_ui_is_complete,
         test_shell_ui_has_no_duplicate_ids,

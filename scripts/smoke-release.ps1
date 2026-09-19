@@ -148,9 +148,21 @@ if (-not (Test-Path (Get-CoreCliEntry (Join-Path $installCopy "core")))) { throw
 if (-not (Test-Path (Join-Path $installCopy "data\marker.txt"))) { throw "data/ was clobbered!" }
 if (-not (Test-Path (Join-Path $installCopy "ui\custom.css"))) { throw "ui/ was clobbered!" }
 if ((Get-Content (Join-Path $installCopy "config.json") -Raw) -ne $userConfig) { throw "config.json changed!" }
-$links = Get-ChildItem (Join-Path $installCopy "core\apps\cli\node_modules") -Force -Directory `
-    | Where-Object { $_.Attributes -match 'ReparsePoint' }
-Write-Host "  junctions recreated: $($links.Count)"
-if ($links.Count -lt 3) { throw "junction restore did not run!" }
+# Core junctions: check the same probe the launcher verifies at boot
+# (junctions.needs_restore). Counting junctions directly under
+# apps\cli\node_modules is layout-dependent — a newer core keeps them one level
+# deeper (@deepseek-ai\…), which made this check fail on a healthy update — and
+# a plain directory where the probe expects a junction means the restore did not
+# run, so the core would load a duplicate copy of its own packages.
+$probe = Join-Path $installCopy "core\apps\cli\node_modules\@deepseek-ai\dsh-app-boot"
+if (-not (Test-Path $probe)) { throw "core junction probe missing after update: $probe" }
+if (-not ((Get-Item $probe -Force).Attributes -match 'ReparsePoint')) {
+    throw "core junction was not restored (plain directory): $probe"
+}
+$manifestPath = Join-Path $installCopy "core\junctions.json"
+if (-not (Test-Path $manifestPath)) { throw "core junctions.json missing after update" }
+$manifestCount = @(Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).Count
+Write-Host "  workspace junction restored; manifest lists $manifestCount junction(s)"
+if ($manifestCount -lt 100) { throw "junctions.json looks truncated ($manifestCount entries)" }
 Write-Host ""
 Write-Host "=== SFX smoke test PASS ===" -ForegroundColor Green
