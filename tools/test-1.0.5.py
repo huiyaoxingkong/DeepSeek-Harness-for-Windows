@@ -1,4 +1,4 @@
-"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
+﻿"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
 
 Covers the three defect families fixed in 1.0.5:
 
@@ -847,6 +847,28 @@ def test_plugin_removal_validates_the_name() -> None:
     check("remove() rejects an unknown dependency", "不是已安装的插件" in body)
 
 
+@case
+def test_immersive_is_gated_on_the_workspace_page() -> None:
+    """Fullscreen must never strand the user on another page.
+
+    ``openFrame`` used to force immersive mode when the server finished
+    starting, even if the user had switched tabs during the (long) start: the
+    sidebar is hidden in immersive mode and the exit button lives in the
+    workspace page, so the other page rendered full-bleed with no way back.
+    """
+    js = _ui_file("app.js")
+    open_frame = js[js.find("function openFrame"): js.find("/* 沉浸模式")]
+    check("openFrame checks which page is visible",
+          'page-workspace' in open_frame and 'contains("hidden")' in open_frame,
+          open_frame[:0] or "")
+    check("openFrame only enters immersive inside that check",
+          "setImmersive(true, false)" in open_frame)
+    show_page = js[js.find("function showPage"): js.find("document.querySelectorAll(\".nav-item\")")]
+    check("showPage exits immersive when leaving the workspace",
+          'name !== "workspace"' in show_page and "immersive" in show_page,
+          show_page[:0] or "")
+
+
 # ---------------------------------------------------------------------- main
 
 
@@ -878,6 +900,7 @@ def main() -> int:
         test_shell_ui_sync_handles_missing_and_dev_layouts,
         test_shell_ui_sync_never_downgrades,
         test_console_output_decoding_never_crashes,
+        test_immersive_is_gated_on_the_workspace_page,
         test_shell_ui_has_no_duplicate_ids,
         test_theme_loader_fetches_relative_stylesheets,
         test_i18n_matches_whitespace_padded_text_nodes,

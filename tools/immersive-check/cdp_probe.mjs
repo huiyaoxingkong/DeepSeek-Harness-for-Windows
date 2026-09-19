@@ -656,6 +656,96 @@ async function main() {
     await control('ui_lang=zh')
   }
 
+  // 11) Switching tabs while the server is starting: the shell must not force
+  //     fullscreen over whatever page the user moved to (that stretched the
+  //     page to 100vh, hid the sidebar and took the exit-fullscreen button
+  //     with the hidden workspace page, leaving no way back).
+  await control('running=0&immersive=0&onboarding=1&ui_lang=zh&start_delay=3')
+  await load()
+  await cdp.eval(`document.getElementById('btn-start').click()`)
+  await sleep(600)
+  await cdp.eval(`document.querySelector('.nav-item[data-page="settings"]').click()`)
+  await sleep(4200)   // let start_server answer and openFrame run
+  const startupTab = await cdp.eval(`(() => {
+    const rect = el => { const b = el.getBoundingClientRect();
+      return { w: Math.round(b.width), h: Math.round(b.height) }; };
+    const page = document.getElementById('page-settings');
+    const sidebar = document.querySelector('.sidebar');
+    const exit = document.getElementById('btn-exit-immersive');
+    const content = document.querySelector('.content');
+    return {
+      bodyClass: document.body.className,
+      immersivePersisted: null,
+      settingsVisible: !page.classList.contains('hidden'),
+      workspaceVisible: !document.getElementById('page-workspace').classList.contains('hidden'),
+      navActive: (document.querySelector('.nav-item.active') || {}).dataset?.page || '',
+      sidebarDisplay: getComputedStyle(sidebar).display,
+      settingsHeight: rect(page).h,
+      viewportHeight: innerHeight,
+      contentPadding: getComputedStyle(content).padding,
+      contentOverflowY: getComputedStyle(content).overflowY,
+      pageHeadVisible: (() => {
+        const head = page.querySelector('.page-head');
+        return head ? head.getClientRects().length > 0 : false;
+      })(),
+      exitVisible: exit ? exit.getClientRects().length > 0 : false,
+      frameHidden: document.getElementById('dsh-frame').classList.contains('hidden'),
+    };
+  })()`)
+  const startTabProblems = []
+  if (startupTab.bodyClass.includes('immersive')) {
+    startTabProblems.push('still forced into fullscreen after switching tabs during start')
+  }
+  if (!startupTab.settingsVisible) startTabProblems.push('the page the user switched to is not shown')
+  if (startupTab.workspaceVisible) startTabProblems.push('workspace page shown although the user switched away')
+  if (startupTab.sidebarDisplay === 'none') startTabProblems.push('sidebar hidden: no way back to other pages')
+  if (startupTab.sidebarDisplay === 'none' && !startupTab.exitVisible) {
+    startTabProblems.push('no visible control returns to the shell (sidebar hidden, no exit button)')
+  }
+  if (startupTab.frameHidden) startTabProblems.push('iframe not loaded although start_server succeeded')
+  // "异常放大" = full-bleed rendering: padding stripped, content pane locked
+  // (not scrollable) and the page header hidden while not in fullscreen.
+  if (startupTab.contentPadding === '0px') {
+    startTabProblems.push('content padding removed (page rendered full-bleed / "enlarged")')
+  }
+  if (startupTab.contentOverflowY !== 'auto') {
+    startTabProblems.push(`content pane not scrollable (overflow-y: ${startupTab.contentOverflowY})`)
+  }
+  if (!startupTab.pageHeadVisible) {
+    startTabProblems.push('page header hidden although the shell is not in fullscreen')
+  }
+  report.failures.push(...startTabProblems)
+  report.scenarios.push({ name: 'startup-tab-switch', measured: startupTab,
+    screenshot: await shot('15-startup-tab-switch'), problems: startTabProblems })
+
+  // 11b) The mirror case: leaving the workspace while fullscreen must restore
+  //      the shell chrome (the sidebar is hidden in fullscreen, so a page
+  //      change must drop fullscreen or the user is stranded there).
+  await control('start_delay=0&running=1&immersive=1&onboarding=1')
+  await load()
+  const immersiveBefore = await cdp.eval(`document.body.classList.contains('immersive')`)
+  await cdp.eval(`showPage('plugins')`)
+  await sleep(500)
+  const afterPageChange = await cdp.eval(`(() => {
+    const sidebar = document.querySelector('.sidebar');
+    return {
+      immersive: document.body.classList.contains('immersive'),
+      sidebarDisplay: getComputedStyle(sidebar).display,
+      pluginsVisible: !document.getElementById('page-plugins').classList.contains('hidden'),
+    };
+  })()`)
+  const leaveProblems = []
+  if (!immersiveBefore) leaveProblems.push('scenario precondition failed: not in fullscreen')
+  if (afterPageChange.immersive) leaveProblems.push('page change while fullscreen kept fullscreen on')
+  if (afterPageChange.sidebarDisplay === 'none') {
+    leaveProblems.push('sidebar still hidden after leaving the workspace page')
+  }
+  if (!afterPageChange.pluginsVisible) leaveProblems.push('target page not shown')
+  report.failures.push(...leaveProblems)
+  report.scenarios.push({ name: 'leave-workspace-while-fullscreen',
+    measured: { immersiveBefore, ...afterPageChange }, problems: leaveProblems })
+  await control('start_delay=0&running=0&immersive=0&ui_theme=&ui_lang=zh')
+
   report.ok = report.failures.length === 0 && report.consoleErrors.length === 0
   fs.mkdirSync(path.dirname(outFile), { recursive: true })
   fs.writeFileSync(outFile, JSON.stringify(report, null, 2))

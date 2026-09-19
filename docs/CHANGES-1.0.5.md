@@ -1,4 +1,4 @@
-﻿# 1.0.5 修改列表（待确认后打包上传）
+# 1.0.5 修改列表（待确认后打包上传）
 
 **状态**：代码与内核已就绪、已本地提交；**尚未打包、尚未上传**
 **基线**：上一发布提交 `e168454`（v1.0.4）
@@ -27,9 +27,10 @@
 
 | 文件 | 变更 |
 | --- | --- |
-| `app/ui/app.js` | **外观（主题）系统修好**：`applyTheme` 原来只对 `http(s)://`、`//`、`/` 开头的值发起请求，内置外观用的是相对路径 `themes/*.css`，于是把路径字符串当 CSS 注入 → 点任何外观都无效；现在按“是否含规则块”判断 CSS 文本/样式表地址，失败时移除旧外观。另：启动服务器后使用内核打印的地址（含 token）；新增「取消更新」按钮的显隐与点击处理 |
+| `app/ui/app.js` | **启动服务器期间切换页签导致界面「异常放大」/卡死**：`openFrame` 原来无条件 `setImmersive(true)`，若用户在启动等待期间（1–3 分钟，首次构建更久）切到别的页签，沉浸模式会隐藏侧边栏与页头、把 `.content` padding 归零并禁止滚动，而「退出全屏」按钮位于已被隐藏的工作台页内 → 既无导航也无返回入口。现在只有停留在工作台页时才自动全屏，`showPage` 离开工作台页时自动退出全屏。另：**外观（主题）系统修好**（相对路径被当 CSS 注入）；启动服务器后使用内核打印的地址（含 token）；新增「取消更新」按钮的显隐与点击处理 |
 | `app/ui/i18n.js` | **语言切换修好**：原来用文本节点整串精确匹配字典键，导航文本带缩进换行（`<span>◇</span>插件\n        `）永远匹配不上；改为按去空白后的文本查表并保留原空白；新增 `update.cancel` 词条 |
-| `app/ui/index.html` | **消除重复 id**：`#store-catalog` 同时是目录列表 `<div>` 与目录地址 `<input>`，导致「添加商店源」取到 div、`.value` 为 undefined、点击即抛 `TypeError`；输入框改为 `store-catalog-url`。新增 `#btn-cancel-update`（取消更新） |
+| `app/ui/index.html` | **消除重复 id**：`#store-catalog` 同时是目录列表 `<div>` 与目录地址 `<input>`，导致「添加商店源」取到 div、`.value` 为 undefined、点击即抛 `TypeError`；输入框改为 `store-catalog-url`。新增 `#btn-cancel-update`（取消更新）。另：`app/ui/app.js` 的 `applyTheme`（主题）与 `showPage`（离开工作台退出全屏）同属「1.0.3 起没生效/卡死」类修复 |
+| `app/ui/themes/*.css` | 主题文件本身未改动（5 套内置外观 + 插件可注册外观）；问题在加载逻辑，已由 `applyTheme` 修复 |
 | `app/plugins.py` | `remove()` 先校验插件是否为已安装依赖（原来对任何名字都回「操作已开始」再异步失败）；暂存目录改用长路径安全删除 |
 | `app/ui/style.css` | **工作台退出全屏后 iframe 塌陷**：iframe 与空状态改绝对定位铺满容器（`top/right/bottom/left:0`），不再依赖 `height:100%`（在 flex 决定高度的父级下会回落到 150px）；沉浸模式保持 `position: relative`；消除非全屏时的双滚动条 |
 | `app/homes.py` | 新增 `remove_tree()` / `long_path()`：`\\?\` 扩展长度路径递归删除，清理只读属性（git pack），**绝不跟随 junction**，robocopy 空镜像兜底；新增 `console_text_kwargs()`（OEM 代码页 + `errors=replace`）、`PS_UTF8_PREFIX`、`version_newer()`；健康检查改为多形态容忍 + 保证 `logs\` 存在 |
@@ -69,11 +70,11 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `tools/test-1.0.5.py` | **119 项**回归（长路径/只读/junction、入口解析、启动梯度、token 地址、健康检查、换核回滚、UI 同步、解码、CSS 不变式、重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验） |
+| `tools/test-1.0.5.py` | **122 项**回归（长路径/只读/junction、入口解析、启动梯度、token 地址、健康检查、换核回滚、UI 同步、解码、CSS 不变式、重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验） |
 | `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 |
 | `tools/audit-backend.py` | **52 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法并校验返回结构与持久化 |
 | `tools/check-duplicate-ids.py` | 单独排查 HTML 重复 id（会被 `getElementById` 静默绑定到错误元素） |
-| `tools/immersive-check/cdp_probe.mjs`、`stub_server.py`、`diag_removal.py` | Edge/WebView2 同内核无头驱动：**13 个场景**（8 个布局 + 真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透并核对「按钮 → 桥方法」+ 取消更新 + 新手引导 + 语言切换）+ 截图；`diag_removal.py` 用于诊断删不掉的目录 |
+| `tools/immersive-check/cdp_probe.mjs`、`stub_server.py`、`diag_removal.py` | Edge/WebView2 同内核无头驱动：**15 个场景**（8 个布局 + 真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透并核对「按钮 → 桥方法」+ 取消更新 + 新手引导 + 语言切换）+ 截图；`diag_removal.py` 用于诊断删不掉的目录 |
 | `tools/core-update-test/run_core_update.py` | 用启动器自身的更新管线在实例目录真机升级/降级 |
 | `tools/core-update-test/test_launch_ladder.py` | 真实 CLI 的启动参数降级与记忆验证 |
 | `tools/core-update-test/test_plugin_on_core.py` | 真实内核上的插件安装/列出/卸载验证 |
@@ -98,10 +99,10 @@
 
 | 测试 | 结果 |
 | --- | --- |
-| `tools/test-1.0.5.py`（含新工具链运行） | **119/119 通过** |
+| `tools/test-1.0.5.py`（含新工具链运行） | **122/122 通过** |
 | `tools/audit-features.py` | **ALL CHECKS PASS**（无缺失/重复 id、无未实现按钮、无未实现桥方法、示例插件未随包） |
 | `tools/audit-backend.py` | **52/52 通过**（全部 Bridge 方法可用且返回结构正确） |
-| `tools/immersive-check/`（Edge 153 无头，13 场景） | **13/13 通过**；修复前退出全屏 iframe=980×150，修复后 980×622；外观 `rgb(14,17,22)`→`rgb(244,246,250)`；导航「◇插件」→「◇Plugins」；取消更新可点击并调用 `cancel_update` |
+| `tools/immersive-check/`（Edge 153 无头，13 场景） | **15/15 通过**；修复前退出全屏 iframe=980×150，修复后 980×622；外观 `rgb(14,17,22)`→`rgb(244,246,250)`；导航「◇插件」→「◇Plugins」；取消更新可点击并调用 `cancel_update` |
 | 真机升级 `0.1.1-rc.2 → 0.1.6-alpha.2` | 通过（备份回收、健康检查 exit 0、HTTP 200） |
 | 真机降级 `0.1.6-alpha.2 → 0.1.1-rc.2` | 通过（裸地址 HTTP 200，旧内核无需 token） |
 | 再升级回 `0.1.6-alpha.2` | 通过 |

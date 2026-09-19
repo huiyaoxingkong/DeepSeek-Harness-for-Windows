@@ -41,6 +41,12 @@ const $ = id => document.getElementById(id);
 const uiPages = ["workspace", "plugins", "settings", "update", "logs", "about"];
 
 function showPage(name) {
+  // 切到非工作台页签时必须退出沉浸全屏：沉浸会隐藏侧边栏，而「退出全屏」按钮
+  // 位于工作台页内。不退出就会卡在一个被拉满的页面里，既看不到导航也没有返回
+  // 入口（启动服务器期间切换页签、或插件页面调用 showPage 都会踩到）。
+  if (name !== "workspace" && document.body.classList.contains("immersive")) {
+    setImmersive(false);
+  }
   uiPages.forEach(p => {
     $("page-" + p).classList.toggle("hidden", p !== name);
   });
@@ -171,8 +177,14 @@ function openFrame(iframe, url) {
   iframe.src = url;
   iframe.classList.remove("hidden");
   $("frame-empty").classList.add("hidden");
-  setImmersive(true, false);
-  document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+  // 只有用户仍停留在工作台页时才自动进入沉浸全屏。启动服务器可能要几分钟
+  // （首次构建核心更久），期间用户可能已经切到别的页签；此时若强制全屏，会把
+  // 当前页撑成 100vh、隐藏侧边栏，并把「退出全屏」按钮连同被隐藏的工作台页一起
+  // 藏掉 —— 界面看起来被“异常放大”，而且没有任何返回入口。
+  if (!$("page-workspace").classList.contains("hidden")) {
+    setImmersive(true, false);
+    document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+  }
 }
 
 /* 沉浸模式：记住上次状态（config.json -> ui_state.immersive），

@@ -27,6 +27,7 @@ import os
 import socketserver
 import sys
 import threading
+import time
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -133,6 +134,9 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
     onboarding_done = True
     ui_theme = ""
     ui_lang = "zh"
+    # Seconds a start_server call is made to take, so scenarios can interact
+    # while the shell is still waiting for the core to come up.
+    start_delay = 0.0
     # Core-update state the UI polls (phase/progress/message/canUpdate).
     update: dict = {
         "phase": "idle", "progress": 0.0, "message": "", "remote": None,
@@ -191,6 +195,8 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
                                      message="更新已取消。", error=None)
             return {"ok": True, "message": "更新已取消。"}
         if method == "start_server":
+            if self.start_delay:
+                time.sleep(self.start_delay)
             type(self).running = True
             return {"ok": True, "message": "服务已启动（stub）", "port": self.core_port,
                     "url": self.core_url or f"http://127.0.0.1:{self.core_port}"}
@@ -289,6 +295,8 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
                 type(self).ui_lang = query["ui_lang"][0]
             if "ui_theme" in query:
                 type(self).ui_theme = query["ui_theme"][0]
+            if "start_delay" in query:
+                type(self).start_delay = float(query["start_delay"][0])
             return self._json({"ok": True, "running": self.running,
                                "immersive": self.immersive,
                                "calls": len(self.calls)})
