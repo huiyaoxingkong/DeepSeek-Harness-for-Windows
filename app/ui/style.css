@@ -171,14 +171,25 @@ a:hover { text-decoration: underline; }
 }
 
 .frame-wrap {
-  flex: 1; height: auto; min-height: 320px;
+  flex: 1 1 auto; min-height: 320px;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius); overflow: hidden; position: relative;
 }
-.frame { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+
+/* iframe / 空状态一律用绝对定位铺满容器。
+   容器高度由父级 flex 决定（flex: 1 且 height: auto）时，子元素的 height: 100%
+   会被浏览器按 auto 处理，iframe 于是回落到自身默认的 150px 高度——这正是
+   「退出全屏后工作台只剩一条边」的根因。绝对定位的 top/right/bottom/left: 0
+   针对已定位祖先的 padding box 解析，与父级高度是否“确定”无关，任何窗口尺寸、
+   任何全屏/非全屏组合下都成立。 */
+.frame {
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+  width: 100%; height: 100%; border: 0; background: #fff; display: block;
+}
 
 .frame-empty {
-  height: 100%; display: grid; place-content: center; text-align: center; gap: 8px;
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 1;
+  display: grid; place-content: center; text-align: center; gap: 8px;
   color: var(--fg-dim);
 }
 .empty-title { font-size: 18px; font-weight: 600; }
@@ -213,7 +224,9 @@ body.immersive .content { padding: 0; overflow: hidden; }
 body.immersive .page { max-width: none; height: 100vh; }
 body.immersive #page-workspace { min-height: 100vh; }
 body.immersive .frame-wrap {
-  height: 100vh; min-height: 0; border: 0; border-radius: 0; position: static;
+  /* 保持 position: relative —— iframe/退出按钮都相对它定位；这里曾经写成
+     static，会让绝对定位的 iframe 改以视口为包含块，布局随之外溢。 */
+  height: 100vh; min-height: 0; border: 0; border-radius: 0;
   animation: imfade .22s ease;
 }
 body.immersive .frame { display: block; }

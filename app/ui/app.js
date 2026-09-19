@@ -132,7 +132,10 @@ async function startServer() {
     if (res.ok) {
       showBanner("ok", res.message || "服务已启动");
       await refreshState();
-      openFrame($("dsh-frame"), `http://127.0.0.1:${res.port || await getPort()}`);
+      // res.url 携带内核启动时打印的地址（dsh >= 0.1.6 在其中附带鉴权 token，
+      // 缺少 token 会被内核以 401 拒绝），因此优先使用它。
+      const url = res.url || `http://127.0.0.1:${res.port || await getPort()}`;
+      openFrame($("dsh-frame"), url);
     } else {
       showBanner("err", res.message || "启动失败");
     }

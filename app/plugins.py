@@ -162,7 +162,9 @@ class PluginManager:
         name = os.path.splitext(os.path.basename(path))[0]
         out = os.path.join(self._cache_dir(), name)
         if os.path.isdir(out):
-            shutil.rmtree(out, ignore_errors=True)
+            # A staged plugin can carry its own node_modules, whose pnpm paths
+            # exceed MAX_PATH: a plain rmtree would silently leave them behind.
+            homes.remove_tree(out)
         try:
             with zipfile.ZipFile(path) as zf:
                 # Zip-slip guard: reject absolute and parent-traversing

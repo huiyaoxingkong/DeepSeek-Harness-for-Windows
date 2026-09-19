@@ -1,18 +1,39 @@
 ﻿# One-click build: portable Node runtime -> core build -> PyInstaller exe -> dist/
 #
-# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller] [-Version 1.0.4] [-Flavor Lazy|Minimal]
+# Usage: powershell -ExecutionPolicy Bypass -File build.ps1 [-SkipCoreBuild] [-SkipPyInstaller] [-Version 1.0.5] [-Flavor Lazy|Minimal]
 #   Lazy    (default) ships portable Node + Git under runtime\ (self-contained)
 #   Minimal ships no runtimes: the app uses system Node/Git and degrades gracefully
 param(
     [switch]$SkipCoreBuild,
     [switch]$SkipPyInstaller,
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [ValidateSet("Lazy", "Minimal")]
     [string]$Flavor = "Lazy"
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# The dsh CLI entry lives wherever apps\cli\package.json says (bin.dsh); the
+# historical apps\cli\lib\bin.js is only the fallback. Resolving it keeps the
+# build valid for any core version (upgrade or downgrade).
+function Get-CoreCliEntry([string]$CoreDir) {
+    $manifest = Join-Path $CoreDir "apps\cli\package.json"
+    if (Test-Path $manifest) {
+        try {
+            $json = Get-Content $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+            $bin = $json.bin
+            $rel = $null
+            if ($bin -is [string]) { $rel = $bin }
+            elseif ($bin -and $bin.dsh) { $rel = $bin.dsh }
+            if ($rel) {
+                $candidate = Join-Path (Join-Path $CoreDir "apps\cli") ($rel -replace '/', '\')
+                if (Test-Path $candidate) { return $candidate }
+            }
+        } catch { }
+    }
+    return (Join-Path $CoreDir "apps\cli\lib\bin.js")
+}
 
 Write-Host "=== DeepSeek Harness Desktop build ===" -ForegroundColor Cyan
 
@@ -81,7 +102,7 @@ Write-Host "  - copying core (built dsh source, junction-aware)..."
 # -SkipCoreBuild reuses the built core checkout, but the dist was just
 # purged above — copy the core whenever it is missing from dist, not only
 # after a fresh core build.
-if (-not $SkipCoreBuild -or -not (Test-Path (Join-Path $dist "core\apps\cli\lib\bin.js"))) {
+if (-not $SkipCoreBuild -or -not (Test-Path (Get-CoreCliEntry (Join-Path $dist "core")))) {
     robocopy (Join-Path $root "core") (Join-Path $dist "core") /E /XJ /MT:32 /NFL /NDL /NJH /NJS /NC /NS /NP `
         /XD .git .dsh-build | Out-Null
     if ($LASTEXITCODE -gt 7) { throw "robocopy core failed ($LASTEXITCODE)" }
@@ -115,7 +136,7 @@ if ($LASTEXITCODE -gt 7) { throw "robocopy store failed ($LASTEXITCODE)" }
 
 if ($Flavor -eq "Lazy") {
     Write-Host "  - verifying shipped core boots (--version)..."
-    & (Join-Path $dist "runtime\node.exe") (Join-Path $dist "core\apps\cli\lib\bin.js") --version
+    & (Join-Path $dist "runtime\node.exe") (Get-CoreCliEntry (Join-Path $dist "core")) --version
     if ($LASTEXITCODE -ne 0) { throw "shipped core does not boot" }
 }
 

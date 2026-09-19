@@ -22,6 +22,7 @@ import zipfile
 
 import homes
 import relink
+from core_api import resolve_cli_entry as _resolve_cli_entry
 
 log = logging.getLogger("updater")
 
@@ -138,6 +139,40 @@ def _version_parts(version: str) -> list:
     for chunk in str(version).split("."):
         parts.append(int(chunk) if chunk.isdigit() else chunk)
     return parts
+
+
+def cleanup_stale_core_backups(app_dir: str, keep: str = "") -> list[str]:
+    """Delete leftover ``core.backup*`` trees from earlier core swaps.
+
+    Every tree except *keep* is removed; whatever resists deletion is returned
+    so the caller can report it, and the next launch retries. Removal goes
+    through :func:`homes.remove_tree` because a core tree contains pnpm paths
+    far beyond MAX_PATH, which is what used to make ``core.backup`` permanent
+    and block all later core upgrades/downgrades.
+    """
+    keep_norm = os.path.normcase(os.path.abspath(keep)) if keep else ""
+    removed: list[str] = []
+    stuck: list[str] = []
+    try:
+        names = list(os.listdir(app_dir))
+    except OSError:
+        return []
+    for name in names:
+        if not name.startswith("core.backup"):
+            continue
+        full = os.path.join(app_dir, name)
+        if keep_norm and os.path.normcase(os.path.abspath(full)) == keep_norm:
+            continue
+        if homes.remove_tree(full):
+            removed.append(name)
+        else:
+            stuck.append(name)
+    if removed:
+        log.info("cleaned stale core backup(s): %s", ", ".join(removed))
+    if stuck:
+        log.warning("core backup(s) still locked, will retry next launch: %s",
+                    ", ".join(stuck))
+    return stuck
 
 
 class CoreUpdater:
@@ -498,28 +533,74 @@ class CoreUpdater:
 
     def _swap(self, src_dir: str) -> None:
         core_dir = self._core.core_dir
+        # Fail fast (and with an accurate message) when the staged tree is not
+        # a usable core: without this check a missing/removed stage directory
+        # surfaces as 20 rounds of "file in use", which is misleading.
+        if not os.path.isdir(src_dir):
+            raise RuntimeError(
+                f"待安装的核心目录不存在（{src_dir}），更新已中止；"
+                "可能是杀毒软件清理或临时目录被删除，请重试。"
+            )
+        staged_entry = _resolve_cli_entry(src_dir)
+        if not os.path.isfile(staged_entry):
+            raise RuntimeError(
+                "待安装的核心缺少 CLI 入口（apps/cli 未构建完成），"
+                "更新已中止，现有核心未改动。请重新执行核心更新。"
+            )
         # Stop the server and any orphaned core processes that would hold
         # file locks on core/ and break the directory rename below.
         self._core.stop()
+        cleanup_stale_core_backups(self._app_dir, keep="")
         backup = os.path.join(self._app_dir, "core.backup")
-        # shutil.rmtree silently leaves partial trees behind when Defender or
-        # another scanner holds transient locks; fall back to cmd rmdir, which
-        # is more tolerant of stale junctions and locked files.
+        if os.path.lexists(backup) and not self._remove_path(backup):
+            # A stale backup we cannot delete (typically left by a pre-1.0.5
+            # update whose rmtree choked on pnpm's >MAX_PATH paths) must never
+            # block the swap again: park the current core under a fresh name
+            # instead and let the next launch retry the cleanup.
+            backup = os.path.join(
+                self._app_dir, f"core.backup-{time.strftime('%Y%m%d-%H%M%S')}")
+            log.warning("stale core.backup not removable; using %s", backup)
+        swapped = False
+        last_error: Exception | None = None
         for attempt in range(20):
             try:
-                if not self._remove_path(backup):
-                    raise OSError("backup removal failed")
                 if os.path.isdir(core_dir):
                     os.replace(core_dir, backup)
                 os.replace(src_dir, core_dir)
+                swapped = True
                 break
             except OSError as exc:
+                last_error = exc
+                # Roll the old core back into place before retrying, so a
+                # failed attempt can never leave the install without a core.
+                if not os.path.isdir(core_dir) and os.path.isdir(backup):
+                    try:
+                        os.replace(backup, core_dir)
+                    except OSError as rollback_exc:
+                        log.error("core rollback failed: %s", rollback_exc)
                 if attempt == 19:
                     raise RuntimeError(
                         f"无法切换核心目录（文件被占用）: {exc}\n"
                         "请关闭其他程序后重试。"
-                    )
+                    ) from exc
                 time.sleep(2)
+        if not swapped:  # defensive: the loop either breaks or raises
+            raise RuntimeError(f"无法切换核心目录: {last_error}")
+        # The swapped-in tree must actually boot before we call the update a
+        # success: a half-built core (interrupted pnpm build, missing CLI
+        # entry) would otherwise leave the user with a dead install.
+        if not self._core.core_ready():
+            try:
+                if os.path.isdir(core_dir):
+                    os.replace(core_dir, src_dir)
+                if os.path.isdir(backup):
+                    os.replace(backup, core_dir)
+            except OSError as exc:
+                log.error("core restore after failed verification: %s", exc)
+            raise RuntimeError(
+                "新核心缺少可执行入口（apps/cli 未构建完成），已回滚到旧核心。"
+                "请重新执行核心更新。"
+            )
         # pnpm created junctions inside src_dir pointing at src_dir-absolute
         # targets; after the move they are stale, so recreate them under
         # core_dir with the same relative layout (relative to old src_dir).
@@ -538,32 +619,26 @@ class CoreUpdater:
                   encoding="utf-8") as fh:
             json.dump(info, fh, ensure_ascii=False, indent=2)
         self._cfg.set("last_updated_core", info["updatedAt"])
+        # The launch-argument probe and the resolved CLI entry are per-core:
+        # drop them so the next start re-detects against the new version.
+        self._cfg.set("core_launch_mode", "")
         self._cfg.save()
-        if os.path.isdir(backup) or os.path.islink(backup):
-            self._remove_path(backup)
+        # The old core is now the backup: reclaim its disk space, plus anything
+        # an earlier failed update left behind.
+        cleanup_stale_core_backups(self._app_dir)
 
     @staticmethod
     def _remove_path(path: str) -> bool:
-        """Remove a path (file or directory tree) with retries and a cmd
-        rmdir fallback; returns True when the path is gone."""
-        for _ in range(3):
-            if not os.path.exists(path) and not os.path.islink(path):
-                return True
-            shutil.rmtree(path, ignore_errors=True)
-            if not os.path.exists(path) and not os.path.islink(path):
-                return True
-            try:
-                subprocess.run(
-                    ["cmd", "/c", "rmdir", "/s", "/q", f'"{path}"'],
-                    capture_output=True, timeout=120,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            if not os.path.exists(path) and not os.path.islink(path):
-                return True
-            time.sleep(2)
-        return not os.path.exists(path) and not os.path.islink(path)
+        """Remove a path (file or directory tree); returns True when gone.
+
+        Delegates to :func:`homes.remove_tree`, which is long-path safe
+        (``\\\\?\\``), clears read-only attributes (git pack files) and never
+        follows junctions into the pnpm store. A previous implementation used
+        ``shutil.rmtree`` plus ``cmd rmdir``, both of which fail with WinError 3
+        on pnpm's >260-char paths and left ``core.backup`` undeletable — which
+        then made every subsequent core swap fail.
+        """
+        return homes.remove_tree(path)
 
     @staticmethod
     def _git_init(core_dir: str) -> None:

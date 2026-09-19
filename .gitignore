@@ -2,7 +2,12 @@
 dist/
 runtime/
 logs/
-tools/
+# tools/ holds the bundled 7-Zip binaries (not committed); the regression
+# tests and headless-browser test harnesses under it ARE source.
+tools/*
+!tools/*.py
+!tools/immersive-check/
+!tools/core-update-test/
 core/
 node_modules/
 *.zip

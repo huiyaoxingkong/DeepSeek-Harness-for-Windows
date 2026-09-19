@@ -1,6 +1,6 @@
 ﻿# Upload v<Version> source + release artifacts to GitHub.
 #
-#   pwsh -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.4
+#   pwsh -ExecutionPolicy Bypass -File scripts\upload-release.ps1 -Version 1.0.5
 #
 # Steps: tag + push source, create the GitHub Release, upload Setup/Update
 # exes and SHA256 files. Auth comes from git's credential helper (the same
@@ -12,7 +12,7 @@
 # release body produces payloads GitHub rejects ("Invalid request"), even
 # through --data-binary files.
 param(
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [string]$Tag = "v$Version",
     [string]$Token = "",
     [switch]$SkipPush

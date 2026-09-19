@@ -25,6 +25,8 @@ import shutil
 import urllib.parse
 import zipfile
 
+import homes
+
 log = logging.getLogger("shellplugins")
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -158,7 +160,7 @@ class ShellPluginManager:
         staging = os.path.join(os.path.dirname(self.user_root()),
                                ".shell-plugin-staging")
         if os.path.isdir(staging):
-            shutil.rmtree(staging, ignore_errors=True)
+            homes.remove_tree(staging)
         os.makedirs(staging, exist_ok=True)
         try:
             with zipfile.ZipFile(path) as zf:
@@ -188,7 +190,7 @@ class ShellPluginManager:
                 return False, "插件包缺少入口脚本 main.js（或 plugin.json 中 entry 指定的文件）"
             dest = os.path.join(self.user_root(), plugin_id)
             if os.path.isdir(dest):
-                shutil.rmtree(dest, ignore_errors=True)
+                homes.remove_tree(dest)
             os.makedirs(self.user_root(), exist_ok=True)
             shutil.move(src, dest)
             cfg = dict(self._enabled_cfg())
@@ -200,7 +202,7 @@ class ShellPluginManager:
             log.exception("shell plugin import failed")
             return False, f"导入失败: {exc}"
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            homes.remove_tree(staging)
 
     def remove(self, plugin_id: str) -> tuple[bool, str]:
         plugin_id = (plugin_id or "").strip()
@@ -213,7 +215,7 @@ class ShellPluginManager:
             return False, f"未找到外壳插件 {plugin_id}"
         target = os.path.join(self.user_root(), plugin_id)
         if os.path.isdir(target):
-            shutil.rmtree(target, ignore_errors=True)
+            homes.remove_tree(target)
         cfg = dict(self._enabled_cfg())
         cfg.pop(plugin_id, None)
         self._cfg.set("shell_plugins", cfg)

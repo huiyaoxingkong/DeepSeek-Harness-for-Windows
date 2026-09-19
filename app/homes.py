@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import locale
 import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -357,21 +359,257 @@ def _write_marker(marker: str, src: str, home: str) -> None:
 
 
 def _remove_tree(path: str) -> bool:
-    for _ in range(3):
-        shutil.rmtree(path, ignore_errors=True)
-        if not os.path.exists(path):
-            return True
+    """Backwards-compatible alias for :func:`remove_tree`."""
+    return remove_tree(path)
+
+
+# ------------------------------------------------------------- robust delete
+#
+# Windows refuses path strings longer than MAX_PATH (260 chars) unless they
+# carry the extended-length ``\\?\`` prefix. A dsh core tree is full of pnpm
+# directories that blow straight past that limit, e.g.
+# ``core\node_modules\.pnpm\@mistralai+mistralai@2.2.6_...\node_modules\...
+# \esm\models\operations\<120-char-operation-name>.d.ts``. Both
+# ``shutil.rmtree`` and ``cmd /c rmdir /s /q`` fail there with WinError 3
+# ("the system cannot find the path specified") and leave the tree in place —
+# which is exactly how a failed core swap used to poison every later core
+# update with "backup removal failed" (see updater.CoreUpdater._swap).
+#
+# Git also marks pack files read-only, and pnpm trees can contain junctions
+# (reparse points) whose targets must never be followed into. The helpers
+# below handle all three cases.
+
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def console_text_kwargs(utf8: bool = False) -> dict:
+    """``subprocess`` kwargs that decode Windows console-tool output safely.
+
+    Native tools (``mklink``, ``netstat``, ``robocopy``, ``taskkill``) write the
+    OEM code page, not UTF-8. Decoding their output as UTF-8 raises
+    ``UnicodeDecodeError`` inside subprocess's reader thread — on a Chinese
+    Windows install that produced thousands of tracebacks during a core swap
+    (one per recreated junction) and could abort the relinking step entirely.
+    ``oem`` matches the console code page and never raises with
+    ``errors="replace"``. PowerShell callers pass ``utf8=True`` and prefix their
+    script with ``[Console]::OutputEncoding``.
+    """
+    if utf8:
+        return {"text": True, "encoding": "utf-8", "errors": "replace"}
+    for encoding in ("oem", locale.getpreferredencoding(False), "utf-8"):
         try:
-            subprocess.run(
-                ["cmd", "/c", "rmdir", "/s", "/q", f'"{path}"'],
-                capture_output=True, timeout=600,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if not os.path.exists(path):
+            "".encode(encoding)
+            return {"text": True, "encoding": encoding, "errors": "replace"}
+        except (LookupError, TypeError):
+            continue
+    return {"text": True, "encoding": "utf-8", "errors": "replace"}
+
+
+# Prepend to a PowerShell -Command script so its text output is UTF-8 on any
+# console code page (pairs with console_text_kwargs(utf8=True)).
+PS_UTF8_PREFIX = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+
+
+def long_path(path: str) -> str:
+    """Return the extended-length (``\\\\?\\``) spelling of *path*.
+
+    Windows APIs called with such a path skip MAX_PATH validation entirely.
+    UNC paths take the ``\\\\?\\UNC\\`` form; an already-prefixed path is
+    returned unchanged.
+    """
+    abspath = os.path.abspath(path)
+    if abspath.startswith("\\\\?\\"):
+        return abspath
+    if abspath.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + abspath[2:]
+    return "\\\\?\\" + abspath
+
+
+def version_parts(version: str) -> list:
+    """Dotted version -> comparable parts (numeric chunks become ints)."""
+    return [int(chunk) if chunk.isdigit() else chunk
+            for chunk in str(version or "").split(".")]
+
+
+def version_newer(candidate: str, reference: str) -> bool:
+    """True when *candidate* sorts after *reference*.
+
+    Used to keep version-aware refreshes forward-only: a live component that is
+    newer than the one shipped in the package (half-applied payload, manual
+    copy, downgraded app) is left alone instead of being silently rolled back.
+    """
+    cand, ref = version_parts(candidate), version_parts(reference)
+    for left, right in zip(cand, ref):
+        if left != right:
+            try:
+                return left > right
+            except TypeError:  # mixed numeric/text segments
+                return str(left) > str(right)
+    return len(cand) > len(ref)
+
+
+def _lexists(path: str) -> bool:
+    """``os.path.lexists`` that also works past MAX_PATH."""
+    if os.path.lexists(path):
+        return True
+    try:
+        return os.path.lexists(long_path(path))
+    except (OSError, ValueError):
+        return False
+
+
+def _is_reparse_point(path: str) -> bool:
+    """True for a junction, symlink or other reparse point (never followed)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    return bool(getattr(st, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _make_writable(path: str) -> None:
+    """Clear the read-only attribute so a locked-by-attribute file can go."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if st.st_mode & stat.S_IWRITE:
+        return
+    try:
+        os.chmod(path, st.st_mode | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _unlink_any(path: str) -> None:
+    """Remove one entry: file, symlink, junction or directory.
+
+    Reparse points are removed as links (``rmdir`` for directory junctions),
+    never recursed into, so a junction into the pnpm store cannot make the
+    caller delete the store's content.
+    """
+    if _is_reparse_point(path):
+        for attempt in (os.rmdir, os.unlink, os.remove):
+            try:
+                attempt(path)
+                return
+            except OSError:
+                continue
+        raise OSError(f"cannot remove reparse point: {path}")
+    try:
+        os.remove(path)
+        return
+    except (IsADirectoryError, PermissionError):
+        pass
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 5:  # not "access denied"
+            raise
+    _make_writable(path)
+    os.remove(path)
+
+
+def _wipe(path: str) -> None:
+    """Recursively delete *path* (post-order), tolerating long paths."""
+    try:
+        entries = list(os.scandir(path))
+    except FileNotFoundError:
+        return
+    except NotADirectoryError:
+        _unlink_any(path)
+        return
+    failures: list[str] = []
+    for entry in entries:
+        child = os.path.join(path, entry.name)
+        try:
+            if entry.is_dir(follow_symlinks=False) and not _is_reparse_point(child):
+                _wipe(child)
+            else:
+                _unlink_any(child)
+        except OSError as exc:
+            failures.append(f"{child}: {exc}")
+    try:
+        os.rmdir(path)
+    except OSError as exc:
+        failures.append(f"{path}: {exc}")
+    if failures:
+        raise OSError("; ".join(failures[:3]))
+
+
+def _robocopy_purge(path: str) -> bool:
+    """Empty a directory tree with robocopy, which is long-path aware.
+
+    ``/MIR`` from an empty source deletes everything under the destination;
+    ``/XJ`` keeps robocopy out of junctions so a store link is never followed
+    into. This is the same fallback build.ps1 uses for the >260-char paths
+    Remove-Item chokes on.
+    """
+    empty = tempfile.mkdtemp(prefix="dsh-empty-")
+    try:
+        for target in (path, long_path(path)):
+            try:
+                subprocess.run(
+                    ["robocopy", empty, target, "/MIR", "/XJ", "/R:1", "/W:1",
+                     "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
+                    capture_output=True, timeout=1800,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                log.warning("robocopy purge failed for %s: %s", target, exc)
+                continue
+            if not _lexists(path):
+                return True
+        return False
+    finally:
+        shutil.rmtree(empty, ignore_errors=True)
+
+
+def remove_tree(path: str, attempts: int = 3) -> bool:
+    """Delete a file or directory tree as thoroughly as Windows allows.
+
+    Order of attack per attempt: a direct recursive delete with the
+    ``\\\\?\\`` prefix (long-path safe, read-only aware, junction safe), then
+    the same via the plain path, then a robocopy purge plus ``rmdir`` for
+    anything a scanner still holds. Returns True when the path is gone; never
+    raises.
+    """
+    if not path:
+        return True
+    for attempt in range(max(1, attempts)):
+        if not _lexists(path):
             return True
-    return not os.path.exists(path)
+        if attempt:
+            time.sleep(1.5)
+        for candidate in (path, long_path(path)):
+            if not _lexists(candidate):
+                continue
+            try:
+                if os.path.isdir(candidate) and not _is_reparse_point(candidate):
+                    _wipe(candidate)
+                else:
+                    _unlink_any(candidate)
+            except OSError as exc:
+                log.debug("remove_tree pass failed for %s: %s", candidate, exc)
+            if not _lexists(path):
+                return True
+        # Last resort: empty the tree with robocopy, then drop the shell.
+        _robocopy_purge(path)
+        if _lexists(path):
+            try:
+                subprocess.run(
+                    ["cmd", "/c", "rmdir", "/s", "/q", path],
+                    capture_output=True, timeout=600,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if not _lexists(path):
+            return True
+    gone = not _lexists(path)
+    if not gone:
+        log.warning("remove_tree could not delete %s", path)
+    return gone
 
 
 # Files written by pre-1.0.2 installers whose Chinese names were decoded
@@ -686,10 +924,15 @@ def registry_env(cfg) -> dict:
 def run_health_check(app_dir: str, cfg, node_exe: str, bin_js: str) -> None:
     """A6: post-migration/upgrade verification.
 
-    When a web profile exists, run ``dsh --profile web --dump-config`` against
-    the instance DSH_HOME and record the outcome to ``logs\\health.json``.
-    A non-zero exit or a crash surfaces here and in the launcher log instead
-    of failing silently at the next server start.
+    When a web profile exists, run the core's config dump (``dsh --profile web
+    --dump-config``) against the instance DSH_HOME and record the outcome to
+    ``logs\\health.json``. A non-zero exit or a crash surfaces here and in the
+    launcher log instead of failing silently at the next server start.
+
+    Version tolerance: the invocation is tried in the forms the CLI has
+    accepted across releases, and a core that simply does not know the flag is
+    reported as ``unsupported`` (skipped) instead of as a broken install — an
+    older core must keep working after a downgrade.
     """
     import subprocess
     import time as _time
@@ -702,22 +945,53 @@ def run_health_check(app_dir: str, cfg, node_exe: str, bin_js: str) -> None:
             and os.path.isfile(bin_js)):
         env = dict(os.environ)
         env["DSH_HOME"] = home
-        try:
-            proc = subprocess.run(
-                [node_exe, bin_js, "--profile", "web", "--dump-config"],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=60, env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            result = {
-                "ok": proc.returncode == 0, "skipped": False,
-                "exit": proc.returncode, "ts": ts,
-                "tail": (proc.stderr or proc.stdout or "")[-400:],
+        candidates = (
+            ["--profile", "web", "--dump-config"],
+            ["web", "--dump-config"],
+            ["--profile", "web", "--dump-default-config"],
+        )
+        usage_re = re.compile(
+            r"unknown option|unknown argument|unrecognized|invalid option|"
+            r"not a valid|too many arguments",
+            re.IGNORECASE,
+        )
+        last: dict = {"ok": False, "skipped": False, "ts": ts, "error": "no invocation succeeded"}
+        for args in candidates:
+            try:
+                proc = subprocess.run(
+                    [node_exe, bin_js, *args],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=60, env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                last = {"ok": False, "skipped": False, "ts": ts, "error": str(exc),
+                        "args": " ".join(args)}
+                continue
+            output = (proc.stderr or "") + (proc.stdout or "")
+            if proc.returncode == 0:
+                last = {
+                    "ok": True, "skipped": False, "exit": 0, "ts": ts,
+                    "args": " ".join(args), "tail": output[-400:],
+                }
+                break
+            if usage_re.search(output):
+                # This core does not implement the dump invocation: not a fault.
+                last = {
+                    "ok": False, "skipped": True, "unsupported": True, "ts": ts,
+                    "exit": proc.returncode, "args": " ".join(args),
+                    "tail": output[-400:],
+                }
+                continue
+            last = {
+                "ok": False, "skipped": False, "exit": proc.returncode, "ts": ts,
+                "args": " ".join(args), "tail": output[-400:],
             }
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            result = {"ok": False, "skipped": False, "ts": ts, "error": str(exc)}
+            break
+        result = last
     path = os.path.join(app_dir, "logs", "health.json")
     try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(result, fh, ensure_ascii=False, indent=2)
     except OSError as exc:

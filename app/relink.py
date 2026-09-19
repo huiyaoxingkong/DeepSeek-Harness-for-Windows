@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 import subprocess
 
+from homes import console_text_kwargs
+
 IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
 
 
@@ -64,8 +66,9 @@ def create_junction(link: str, target: str) -> bool:
     try:
         result = subprocess.run(
             ["cmd", "/c", "mklink", "/J", link, target],
-            capture_output=True, text=True,
+            capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
+            **console_text_kwargs(),
         )
         return result.returncode == 0
     except OSError:

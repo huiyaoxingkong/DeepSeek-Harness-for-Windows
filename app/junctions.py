@@ -13,6 +13,8 @@ import logging
 import os
 import subprocess
 
+import homes
+
 log = logging.getLogger("junctions")
 
 PROBE = os.path.join("apps", "cli", "node_modules", "@deepseek-ai", "dsh-app-boot")
@@ -39,9 +41,11 @@ def restore(core_dir: str, script_path: str) -> bool:
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-File", script_path, core_dir],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=900, creationflags=subprocess.CREATE_NO_WINDOW,
+             "-Command", homes.PS_UTF8_PREFIX
+             + f"& '{script_path}' '{core_dir}'"],
+            capture_output=True, timeout=900,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            **homes.console_text_kwargs(utf8=True),
         )
         if result.returncode != 0:
             log.warning("junction restore failed: %s", result.stderr[-300:])

@@ -2,15 +2,15 @@
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.4 -SkipBuild
-#   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.4 -Flavor Minimal -SkipBuild
+#   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.5 -SkipBuild
+#   powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.5 -Flavor Minimal -SkipBuild
 #
 # Products written to release\:
 #   DeepSeekHarness-<ver>-Setup.exe          first install (Lazy default name)
 #   DeepSeekHarness-<ver>-Minimal-Setup.exe  Minimal flavor (no bundled runtimes)
 #   <exe>.sha256 / SHA256SUMS-<ver>[-Minimal].txt
 param(
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [ValidateSet("Lazy", "Minimal")]
     [string]$Flavor = "Lazy",
     [switch]$SkipBuild,

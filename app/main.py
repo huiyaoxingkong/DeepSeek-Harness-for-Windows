@@ -27,6 +27,7 @@ import plugins
 import providers
 import settings
 import shellplugins
+import shellui
 import store
 import tray
 import ui_server
@@ -255,7 +256,10 @@ class Bridge:
             return {"ok": False,
                     "message": "插件依赖修复超时，请查看日志后重启应用重试。"}
         ok, msg = self._core.start()
-        return {"ok": ok, "message": msg, "port": self._cfg.get("port", 3080)}
+        # The URL must be the one the core printed: dsh >= 0.1.6 puts its auth
+        # token there and 401s anything else.
+        return {"ok": ok, "message": msg, "port": self._cfg.get("port", 3080),
+                "url": self._core.web_url(self._cfg.get("port", 3080))}
 
     def stop_server(self) -> dict:
         ok, msg = self._core.stop()
@@ -509,12 +513,14 @@ class Bridge:
         import io
         rows = []
         try:
-            script = ("Get-CimInstance Win32_Process -Filter \"Name='DeepSeek Harness.exe'\" | "
-                      "Select-Object ProcessId, ExecutablePath | ConvertTo-Csv -NoTypeInformation")
+            script = homes.PS_UTF8_PREFIX + (
+                "Get-CimInstance Win32_Process -Filter \"Name='DeepSeek Harness.exe'\" | "
+                "Select-Object ProcessId, ExecutablePath | ConvertTo-Csv -NoTypeInformation")
             out = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", script],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, timeout=30,
                 creationflags=subprocess.CREATE_NO_WINDOW,
+                **homes.console_text_kwargs(utf8=True),
             )
             for row in csv.DictReader(io.StringIO(out.stdout.strip())):
                 pid = (row.get("ProcessId") or "").strip()
@@ -538,8 +544,9 @@ class Bridge:
         try:
             out = subprocess.run(
                 ["netstat", "-ano", "-p", "tcp"],
-                capture_output=True, text=True, timeout=20,
+                capture_output=True, timeout=20,
                 creationflags=subprocess.CREATE_NO_WINDOW,
+                **homes.console_text_kwargs(),
             )
         except (OSError, subprocess.TimeoutExpired):
             return ""
@@ -615,10 +622,22 @@ def main() -> None:
     threading.Thread(target=homes.run_health_check,
                      args=(APP_DIR, cfg, core_stub.node_exe, core_stub.bin_js),
                      daemon=True).start()
+    # A core swap that failed in an earlier version could leave a core.backup*
+    # tree behind (pnpm paths beyond MAX_PATH resist deletion). Retry that
+    # cleanup on every launch so the next upgrade starts from a clean slate.
+    threading.Thread(target=updater.cleanup_stale_core_backups, args=(APP_DIR,),
+                     daemon=True).start()
     log.info("instance data dir: %s (dsh home: %s)", data_dir, home)
 
     bridge = Bridge()
     port = cfg.get("port", 3080)
+    # The shell UI lives in <app>\ui, which the (documented) re-skin path also
+    # edits — so an upgraded install would otherwise keep serving the previous
+    # release's UI forever, including its layout bugs. Refresh it from the
+    # shipped copy before the server serves it, keeping the old folder aside.
+    ui_sync = shellui.sync_shell_ui(APP_DIR, settings.VERSION)
+    if ui_sync["action"] != "none":
+        log.info("shell UI sync: %s", ui_sync)
     ui = ui_server.UiServer(APP_DIR, bridge, shell_plugins=bridge._shell)
     if not ui.start():
         log.error("failed to start shell UI server")

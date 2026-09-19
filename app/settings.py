@@ -8,7 +8,7 @@ import threading
 
 # Current launcher version; synced into config.json at startup so upgraded
 # installs report the real version instead of the pre-upgrade one.
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 
 
 class Settings:
@@ -29,6 +29,9 @@ class Settings:
         "data_dir": "data",
         "app_version": VERSION,
         "last_updated_core": "",
+        # Index into CoreController.LAUNCH_CANDIDATES that this core accepted
+        # last time; empty means "probe from the most capable flags".
+        "core_launch_mode": "",
         "onboarding_done": False,
         "shell_plugins": {},
         "ui_state": {"immersive": False},

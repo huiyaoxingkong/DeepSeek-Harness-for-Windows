@@ -19,12 +19,36 @@ $work = Join-Path $root ".tmp-sfx-test"
 if (Test-Path $work) { & cmd /c rmdir /s /q """$work""" | Out-Null }
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 
+# The dsh CLI entry lives wherever apps\cli\package.json says (bin.dsh); the
+# historical apps\cli\lib\bin.js is only the fallback. Resolving it keeps this
+# smoke test valid for any core version a release ships.
+function Get-CoreCliEntry([string]$CoreDir) {
+    $manifest = Join-Path $CoreDir "apps\cli\package.json"
+    if (Test-Path $manifest) {
+        try {
+            $json = Get-Content $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+            $bin = $json.bin
+            $rel = $null
+            if ($bin -is [string]) { $rel = $bin }
+            elseif ($bin -and $bin.dsh) { $rel = $bin.dsh }
+            if ($rel) {
+                $candidate = Join-Path (Join-Path $CoreDir "apps\cli") ($rel -replace '/', '\')
+                if (Test-Path $candidate) { return $candidate }
+            }
+        } catch { }
+    }
+    return (Join-Path $CoreDir "apps\cli\lib\bin.js")
+}
+
 # 1. payload content checks ------------------------------------------------
 Write-Host "=== 1. Setup payload ===" -ForegroundColor Cyan
 $setupOut = Join-Path $work "setup-content"
 & $sevenZip x $setupExe "-o$setupOut" -y -bso0 -bsp0
 if ($LASTEXITCODE -ne 0) { throw "7z cannot open Setup.exe" }
-$setupMust = @("DeepSeek Harness.exe", "core\apps\cli\lib\bin.js",
+if (-not (Test-Path (Get-CoreCliEntry (Join-Path $setupOut "core")))) {
+    throw "Setup payload missing the core CLI entry"
+}
+$setupMust = @("DeepSeek Harness.exe",
                "post-install.bat", "ui\index.html",
                "启动 DeepSeek Harness.bat", "停止 DeepSeek Harness.bat",
                "创建桌面快捷方式.ps1", "stop-core.ps1")
@@ -54,7 +78,10 @@ Write-Host "=== 2. Update payload (must NOT contain data/ui/config/logs) ===" -F
 $updateOut = Join-Path $work "update-content"
 & $sevenZip x $updateExe "-o$updateOut" -y -bso0 -bsp0
 if ($LASTEXITCODE -ne 0) { throw "7z cannot open Update.exe" }
-$updateMust = @("DeepSeek Harness.exe", "core\apps\cli\lib\bin.js",
+if (-not (Test-Path (Get-CoreCliEntry (Join-Path $updateOut "core")))) {
+    throw "Update payload missing the core CLI entry"
+}
+$updateMust = @("DeepSeek Harness.exe",
                 "post-update.bat", "_internal\ui\index.html",
                 "启动 DeepSeek Harness.bat", "停止 DeepSeek Harness.bat",
                 "创建桌面快捷方式.ps1", "stop-core.ps1")
@@ -117,7 +144,7 @@ try {
 }
 Write-Host "  post-update exit: $postExit"
 Start-Sleep -Seconds 2
-if (-not (Test-Path (Join-Path $installCopy "core\apps\cli\lib\bin.js"))) { throw "core missing after update" }
+if (-not (Test-Path (Get-CoreCliEntry (Join-Path $installCopy "core")))) { throw "core missing after update" }
 if (-not (Test-Path (Join-Path $installCopy "data\marker.txt"))) { throw "data/ was clobbered!" }
 if (-not (Test-Path (Join-Path $installCopy "ui\custom.css"))) { throw "ui/ was clobbered!" }
 if ((Get-Content (Join-Path $installCopy "config.json") -Raw) -ne $userConfig) { throw "config.json changed!" }

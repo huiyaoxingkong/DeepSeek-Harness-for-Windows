@@ -4,14 +4,18 @@ echo 正在恢复核心组件链接...
 if exist "%~dp0scripts\restore-junctions.ps1" (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\restore-junctions.ps1" "%~dp0core"
 )
-rem Refresh the default shell UI: pre-1.0.3 installs have no ui\.version
-rem marker; keep their ui as backup and install the bundled default.
-if not exist "%~dp0ui\.version" (
+rem Refresh the shell UI whenever the live copy is not this release's build:
+rem 1.0.4 refreshed only when ui\.version was missing, so every install that
+rem already had the marker kept serving the old (buggy) UI after an upgrade.
+rem The live folder is kept as ui-backup either way.
+set "UI_CURRENT=0"
+if exist "%~dp0ui\.version" findstr /x /c:"1.0.5" "%~dp0ui\.version" >nul 2>&1 && set "UI_CURRENT=1"
+if "%UI_CURRENT%"=="0" (
   if exist "%~dp0ui-backup" rmdir /s /q "%~dp0ui-backup" >nul 2>&1
   if exist "%~dp0ui" rename "%~dp0ui" "ui-backup"
   if exist "%~dp0_internal\ui" robocopy "%~dp0_internal\ui" "%~dp0ui" /E /NFL /NDL /NJH /NJS /NP >nul
   if not exist "%~dp0ui" robocopy "%~dp0ui-backup" "%~dp0ui" /E /NFL /NDL /NJH /NJS /NP >nul
-  echo 1.0.4 > "%~dp0ui\.version"
+  echo 1.0.5 > "%~dp0ui\.version"
 )
 rem 冒烟测试标记：存在 no-launch.flag 时不建快捷方式、不启动
 if exist "%~dp0no-launch.flag" exit /b 0
