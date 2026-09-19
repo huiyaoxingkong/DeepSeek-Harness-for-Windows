@@ -270,6 +270,10 @@
             <span>关闭窗口时最小化到系统托盘（后台运行）</span>
           </label>
           <label class="check">
+            <input id="close-confirm" type="checkbox">
+            <span>关闭窗口时先弹出确认界面（可取消，或改为最小化到托盘）</span>
+          </label>
+          <label class="check">
             <input id="auto-launch" type="checkbox">
             <span>开机自动启动 DeepSeek Harness</span>
           </label>
@@ -525,6 +529,22 @@
         <button id="onb-skip" class="btn ghost">跳过</button>
         <button id="onb-prev" class="btn ghost" disabled>上一步</button>
         <button id="onb-next" class="btn primary">下一步</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== 关闭确认 ===================== -->
+  <div id="close-confirm-dialog" class="onboarding hidden">
+    <div class="onb-card" style="max-width:460px;">
+      <h2 style="font-size:17px;margin-bottom:10px;">关闭 DeepSeek Harness？</h2>
+      <p>关闭后会先<b>停止内核服务器</b>再退出，并保存当前设置；正在进行的任务会被中断。</p>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap;">
+        <button id="btn-close-cancel" class="btn ghost" type="button">取消</button>
+        <button id="btn-close-tray" class="btn ghost" type="button">最小化到托盘</button>
+        <button id="btn-close-quit" class="btn danger" type="button">关闭应用</button>
+      </div>
+      <div class="hint" style="margin-top:10px;">
+        提示：可在「设置 → 服务器」中关闭「关闭窗口时先弹出确认界面」。
       </div>
     </div>
   </div>

@@ -21,6 +21,9 @@ class Settings:
         "auto_start": False,
         "open_browser": False,
         "close_to_tray": False,
+        # Ask before closing the window: the shell shows a confirmation dialog
+        # (关闭应用 / 最小化到托盘 / 取消) instead of exiting immediately.
+        "close_confirm": True,
         "proxy_url": "",
         "npm_registry": "",
         "github_mirror": "",

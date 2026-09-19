@@ -255,6 +255,7 @@ async function loadSettings() {
   $("auto-start").checked = state.app.autoStart;
   $("open-browser").checked = state.app.openBrowser;
   $("close-to-tray").checked = state.app.closeToTray;
+  $("close-confirm").checked = state.app.closeConfirm !== false;
   $("auto-launch").checked = state.app.autoLaunch;
   $("proxy-url").value = state.app.proxyUrl || "";
   $("npm-registry").value = state.app.npmRegistry || "";
@@ -450,6 +451,7 @@ $("btn-save-settings").addEventListener("click", async () => {
     auto_start: $("auto-start").checked,
     open_browser: $("open-browser").checked,
     close_to_tray: $("close-to-tray").checked,
+    close_confirm: $("close-confirm").checked,
     proxy_url: $("proxy-url").value,
     npm_registry: $("npm-registry").value,
     github_mirror: $("github-mirror").value,
@@ -1594,6 +1596,45 @@ $("btn-copy-plugin-prompt").addEventListener("click", async () => {
   setTimeout(() => { $("btn-copy-plugin-prompt").textContent = "复制"; }, 1500);
 });
 
+/* ---------------- 关闭确认 ---------------- */
+
+/* 内核（Python 侧）在窗口关闭时把 close 标记放进 poll_tray 的返回值；这里弹确认框，
+   三个按钮分别回调 取消 / 最小化到托盘 / 关闭应用（关闭应用时 Python 会先保存设置
+   并停止内核服务器）。 */
+let closeDialogOpen = false;
+
+function showCloseConfirm() {
+  if (closeDialogOpen) return;
+  closeDialogOpen = true;
+  const box = $("close-confirm-dialog");
+  if (box) box.classList.remove("hidden");
+}
+
+function hideCloseConfirm() {
+  closeDialogOpen = false;
+  const box = $("close-confirm-dialog");
+  if (box) box.classList.add("hidden");
+}
+
+/* 供 Python 侧（evaluate_js）即时唤醒用；轮询是保底通道。 */
+window.__dshCloseRequest = showCloseConfirm;
+
+$("btn-close-cancel").addEventListener("click", async () => {
+  hideCloseConfirm();
+  await callApi("cancel_close").catch(() => {});
+});
+
+$("btn-close-tray").addEventListener("click", async () => {
+  hideCloseConfirm();
+  const res = await callApi("hide_to_tray").catch(() => null);
+  if (res && res.ok === false) showBanner("err", res.message || "最小化失败");
+});
+
+$("btn-close-quit").addEventListener("click", async () => {
+  hideCloseConfirm();
+  await callApi("quit_app").catch(() => {});
+});
+
 /* ---------------- boot ---------------- */
 
 (async function init() {
@@ -1616,6 +1657,12 @@ $("btn-copy-plugin-prompt").addEventListener("click", async () => {
     setImmersive(wantImmersive, false);
     if (!wantImmersive) showPage("workspace");
   }
-  // 托盘命令轮询：托盘菜单/点击经 Python 队列，由桥线程执行窗口操作
-  setInterval(() => callApi("poll_tray").catch(() => {}), 800);
+  // 托盘命令轮询：托盘菜单/点击经 Python 队列，由桥线程执行窗口操作；
+  // 同时接收「用户点了窗口关闭按钮」的标记并弹出确认界面。
+  setInterval(async () => {
+    try {
+      const res = await callApi("poll_tray");
+      if (res && res.close) showCloseConfirm();
+    } catch (e) { /* 轮询失败不致命 */ }
+  }, 800);
 })();

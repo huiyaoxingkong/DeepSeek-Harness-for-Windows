@@ -1,4 +1,4 @@
-/* 外壳 UI 多语言（E2）：中 / 英。
+﻿/* 外壳 UI 多语言（E2）：中 / 英。
    零标记方案：以中文原文为键的反向映射，DOMContentLoaded 时遍历静态文本节点
    与 placeholder 替换为当前语言；动态字符串在 app.js 中用 t() 包裹。 */
 "use strict";
@@ -43,6 +43,10 @@ const I18N_DICT = {
     "plugins.presetWebAll": "dsh-web 全家桶（19 插件聚合包）",
     "update.tagBtn": "更新到所选版本",
     "update.cancel": "取消更新",
+    "settings.closeConfirm": "关闭窗口时先弹出确认界面（可取消，或改为最小化到托盘）",
+    "close.title": "关闭 DeepSeek Harness？",
+    "close.body": "关闭后会先停止内核服务器再退出，并保存当前设置；正在进行的任务会被中断。",
+    "close.cancel": "取消", "close.tray": "最小化到托盘", "close.quit": "关闭应用",
     "update.refreshList": "刷新列表",
     "logs.filter": "过滤关键词…",
     "instances.title": "本机实例",
@@ -87,6 +91,10 @@ const I18N_DICT = {
     "plugins.presetWebAll": "dsh-web all-in-one (19-plugin bundle)",
     "update.tagBtn": "Update to Selected Version",
     "update.cancel": "Cancel Update",
+    "settings.closeConfirm": "Ask for confirmation before closing the window (cancel, or minimize to tray)",
+    "close.title": "Close DeepSeek Harness?",
+    "close.body": "Closing stops the core server and saves your settings; running tasks are interrupted.",
+    "close.cancel": "Cancel", "close.tray": "Minimize to Tray", "close.quit": "Close App",
     "update.refreshList": "Refresh List",
     "logs.filter": "Filter keywords…",
     "instances.title": "Local Instances",

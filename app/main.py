@@ -69,6 +69,10 @@ class Bridge:
         self._shell = shellplugins.ShellPluginManager(APP_DIR, self._cfg)
         self._tray = tray.TrayController(APP_DIR)
         self._quitting = False
+        # Set when the window close was cancelled for confirmation; the shell
+        # picks it up from poll_tray and answers via quit_app/hide_to_tray/
+        # cancel_close.
+        self._close_requested = threading.Event()
         # Core workspace junctions may be missing right after a generic
         # archive extraction; restore them before the server can start.
         self._junctions_ok = threading.Event()
@@ -138,6 +142,7 @@ class Bridge:
                 "openBrowser": self._cfg.get("open_browser", False),
                 "onboardingDone": self._cfg.get("onboarding_done", False),
                 "closeToTray": self._cfg.get("close_to_tray", False),
+                "closeConfirm": self._cfg.get("close_confirm", True),
                 "autoLaunch": self._auto_launch_enabled(),
                 "dataDir": data,
                 "dshHome": os.environ.get("DSH_HOME", ""),
@@ -220,7 +225,7 @@ class Bridge:
 
     def save_settings(self, patch: dict) -> dict:
         allowed = {"api_key", "base_url", "port", "auto_start",
-                   "open_browser", "close_to_tray", "proxy_url",
+                   "open_browser", "close_to_tray", "close_confirm", "proxy_url",
                    "npm_registry", "github_mirror"}
         for key, value in patch.items():
             if key not in allowed:
@@ -237,7 +242,7 @@ class Bridge:
                     value = int(value)
                 except (TypeError, ValueError):
                     continue
-            if key in ("auto_start", "open_browser", "close_to_tray"):
+            if key in ("auto_start", "open_browser", "close_to_tray", "close_confirm"):
                 value = bool(value)
             if key in ("proxy_url", "npm_registry", "github_mirror"):
                 value = str(value).strip()
@@ -277,16 +282,20 @@ class Bridge:
     def poll_tray(self) -> dict:
         """Executed by the shell UI timer; runs pending tray commands on the
         bridge thread (the same thread pywebview window calls already use)."""
+        close = self._close_requested.is_set() and not self._quitting
         cmd = self._tray.pop()
         if cmd == "show":
-            return self.show_window()
-        if cmd == "start":
-            return self.start_server()
-        if cmd == "stop":
-            return self.stop_server()
-        if cmd == "quit":
-            return self.quit_app()
-        return {"ok": True, "cmd": ""}
+            result = self.show_window()
+        elif cmd == "start":
+            result = self.start_server()
+        elif cmd == "stop":
+            result = self.stop_server()
+        elif cmd == "quit":
+            result = self.quit_app()
+        else:
+            result = {"ok": True, "cmd": ""}
+        # `close` drives the shell's confirmation dialog (window X pressed).
+        return {**result, "close": close}
 
     def show_window(self) -> dict:
         try:
@@ -298,9 +307,12 @@ class Bridge:
         return {"ok": True}
 
     def quit_app(self) -> dict:
+        """Save state, stop the core server and exit the application."""
         if self._quitting:
             return {"ok": True}
         self._quitting = True
+        self._close_requested.clear()
+        self._save_state()
         try:
             self._core.stop()
         except Exception as exc:
@@ -317,16 +329,82 @@ class Bridge:
             os._exit(0)
         return {"ok": True}
 
-    def _on_closing(self) -> bool:
-        """Window close: exit, or hide to tray when close_to_tray is set."""
-        if self._quitting or not self._cfg.get("close_to_tray", False):
-            return True
+    def _save_state(self) -> None:
+        """Flush config.json so a close never loses the latest settings."""
+        try:
+            self._cfg.save()
+            log.info("settings saved before exit (port=%s)",
+                     self._cfg.get("port", 3080))
+        except Exception as exc:  # saving must never block the shutdown
+            log.warning("settings save on exit failed: %s", exc)
+
+    def _hide_window(self) -> bool:
         try:
             if webview.windows:
                 webview.windows[0].hide()
+            return True
         except Exception as exc:
-            log.warning("hide to tray failed: %s", exc)
-        return False
+            log.warning("hide window failed: %s", exc)
+            return False
+
+    def _nudge_shell(self) -> None:
+        """Best-effort push so the dialog appears instantly.
+
+        The guaranteed channel is ``poll_tray`` (the shell polls it every
+        800 ms and opens the dialog from there); this only removes that delay
+        when pywebview accepts an evaluate_js from a worker thread.
+        """
+        js = "window.__dshCloseRequest && window.__dshCloseRequest()"
+
+        def worker() -> None:
+            time.sleep(0.12)
+            try:
+                if webview.windows:
+                    webview.windows[0].evaluate_js(js)
+            except Exception as exc:
+                log.debug("close nudge skipped: %s", exc)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_closing(self) -> bool:
+        """Window close: confirm first, then save + stop the core on the way out.
+
+        Returning False cancels the native close so the shell can show its
+        dialog; the dialog's buttons call ``quit_app`` / ``hide_to_tray`` /
+        ``cancel_close``. With the confirmation switched off the legacy
+        behaviour applies (close to tray, or exit straight away).
+        """
+        if self._quitting:
+            return True
+        if self._cfg.get("close_confirm", True):
+            if self._close_requested.is_set():
+                # Second close request while the dialog is already up: treat it
+                # as confirmation. This also guarantees the window can always be
+                # closed even if the shell cannot answer (hung/blank WebView).
+                log.info("second close request; quitting without waiting")
+                threading.Thread(target=self.quit_app, daemon=True).start()
+                return False
+            self._close_requested.set()
+            self._nudge_shell()
+            log.info("close requested; waiting for the shell confirmation")
+            return False
+        if self._cfg.get("close_to_tray", False):
+            self._hide_window()
+            return False
+        self._save_state()
+        return True
+
+    def cancel_close(self) -> dict:
+        """User picked 取消 in the close dialog."""
+        self._close_requested.clear()
+        return {"ok": True}
+
+    def hide_to_tray(self) -> dict:
+        """User picked 最小化到托盘: keep the core running in the background."""
+        self._close_requested.clear()
+        ok = self._hide_window()
+        return {"ok": ok, "message": "已最小化到系统托盘（服务器继续运行）" if ok
+                else "最小化失败，请查看日志"}
 
     def read_log(self, tail: int = 200) -> str:
         return self._core.read_log(tail)
@@ -672,7 +750,11 @@ def main() -> None:
     try:
         webview.start(func=_after_start, debug=False, http_server=False)
     finally:
-        log.info("launcher exiting; stopping core server")
+        log.info("launcher exiting; saving settings and stopping core server")
+        try:
+            cfg.save()
+        except OSError as exc:
+            log.warning("final settings save failed: %s", exc)
         bridge._core.stop()
         bridge._tray.stop()
         ui.stop()

@@ -869,6 +869,63 @@ def test_immersive_is_gated_on_the_workspace_page() -> None:
           show_page[:0] or "")
 
 
+@case
+def test_close_saves_state_and_stops_the_core() -> None:
+    """Closing must confirm first, then save settings and stop the core."""
+    main_py = open(os.path.join(REPO, "app", "main.py"), "r", encoding="utf-8").read()
+    quit_body = main_py[main_py.find("    def quit_app(self)"): main_py.find("    def _save_state")]
+    check("quit_app saves the config", "_save_state()" in quit_body)
+    check("quit_app stops the core server before destroying the window",
+          quit_body.find("self._core.stop()") < quit_body.find("destroy()"))
+    check("quit_app stops the tray icon", "self._tray.stop()" in quit_body)
+    check("quit_app clears the pending close request", "_close_requested.clear()" in quit_body)
+
+    closing = main_py[main_py.find("    def _on_closing"): main_py.find("    def cancel_close")]
+    check("close is deferred when confirmation is enabled",
+          'self._cfg.get("close_confirm", True)' in closing and "return False" in closing)
+    check("_on_closing nudges the shell and sets the request flag",
+          "_close_requested.set()" in closing and "_nudge_shell()" in closing)
+    check("a second close request quits without waiting (never traps the user)",
+          "second close request" in closing)
+    check("close with confirmation off saves state before allowing the close",
+          "_save_state()" in closing)
+    check("hide-to-tray keeps the app running", "def hide_to_tray" in main_py)
+    check("poll_tray carries the close flag",
+          '"close": close' in main_py and "_close_requested.is_set()" in main_py)
+    check("the finally block saves settings too",
+          "final settings save failed" in main_py and "cfg.save()" in main_py)
+
+
+@case
+def test_close_confirmation_ui_is_complete() -> None:
+    """The dialog needs its own id, three actions, and a settings toggle."""
+    html = _ui_file("index.html")
+    js = _ui_file("app.js")
+    ids = re.findall(r'\bid="([^"]+)"', html)
+    duplicates = {name: ids.count(name) for name in set(ids) if ids.count(name) > 1}
+    check("no duplicate ids after adding the dialog", not duplicates, json.dumps(duplicates))
+    check("settings has the confirm toggle", 'id="close-confirm"' in html)
+    check("dialog has its own id", 'id="close-confirm-dialog"' in html)
+    for button in ("btn-close-cancel", "btn-close-tray", "btn-close-quit"):
+        check(f"dialog offers {button}", f'id="{button}"' in html)
+    dialog_at = html.find('id="close-confirm-dialog"')
+    scripts_at = html.find('<script src="i18n.js"')
+    check("dialog markup precedes the scripts (handlers can bind)",
+          0 < dialog_at < scripts_at, f"dialog@{dialog_at} scripts@{scripts_at}")
+    check("cancel calls cancel_close", 'callApi("cancel_close")' in js)
+    check("minimize calls hide_to_tray", 'callApi("hide_to_tray")' in js)
+    check("close calls quit_app", 'callApi("quit_app")' in js)
+    check("poll_tray opens the dialog", "res.close) showCloseConfirm" in js)
+    check("the toggle is persisted with the other settings",
+          'close_confirm: $("close-confirm").checked' in js)
+    main_py = open(os.path.join(REPO, "app", "main.py"), "r", encoding="utf-8").read()
+    check("close_confirm reaches get_state",
+          'self._cfg.get("close_confirm", True)' in main_py)
+    settings_defaults = open(os.path.join(REPO, "app", "settings.py"), "r",
+                             encoding="utf-8").read()
+    check("close_confirm has a default", '"close_confirm": True' in settings_defaults)
+
+
 # ---------------------------------------------------------------------- main
 
 
@@ -901,6 +958,8 @@ def main() -> int:
         test_shell_ui_sync_never_downgrades,
         test_console_output_decoding_never_crashes,
         test_immersive_is_gated_on_the_workspace_page,
+        test_close_saves_state_and_stops_the_core,
+        test_close_confirmation_ui_is_complete,
         test_shell_ui_has_no_duplicate_ids,
         test_theme_loader_fetches_relative_stylesheets,
         test_i18n_matches_whitespace_padded_text_nodes,

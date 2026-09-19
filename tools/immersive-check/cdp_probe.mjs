@@ -746,6 +746,61 @@ async function main() {
     measured: { immersiveBefore, ...afterPageChange }, problems: leaveProblems })
   await control('start_delay=0&running=0&immersive=0&ui_theme=&ui_lang=zh')
 
+  // 12) Close confirmation: pressing the window X (the bridge reports it via
+  //     poll_tray) must open a dialog offering cancel / minimize to tray /
+  //     close app, and the chosen action must reach the bridge.
+  await control('running=1&immersive=0&onboarding=1&ui_lang=zh&reset_calls=1&close_request=1')
+  await load()
+  await sleep(1400)   // poll interval is 800 ms
+  const closeDialog = await cdp.eval(`(() => {
+    const box = document.getElementById('close-confirm-dialog');
+    return {
+      visible: box ? !box.classList.contains('hidden') : null,
+      buttons: ['btn-close-cancel', 'btn-close-tray', 'btn-close-quit']
+        .map(id => !!document.getElementById(id)),
+      title: (box || {}).querySelector ? (box.querySelector('h2') || {}).textContent : '',
+      settingCheckbox: !!document.getElementById('close-confirm'),
+    };
+  })()`)
+  const closeProblems = []
+  if (closeDialog.visible !== true) closeProblems.push('close confirmation dialog not shown for a close request')
+  if (closeDialog.buttons.some(v => !v)) closeProblems.push('close dialog is missing one of its actions')
+  if (!closeDialog.settingCheckbox) closeProblems.push('no "confirm before closing" setting in the settings page')
+
+  // Cancel keeps the app open and tells the bridge.
+  await cdp.eval(`document.getElementById('btn-close-cancel').click()`)
+  await sleep(700)
+  const afterCancel = await cdp.eval(`document.getElementById('close-confirm-dialog').classList.contains('hidden')`)
+  let journal = await (await fetch(`http://127.0.0.1:${shellPort}/api/control/calls`)).json()
+  if (afterCancel !== true) closeProblems.push('cancel did not close the dialog')
+  if (!journal.calls.some(c => c.method === 'cancel_close')) {
+    closeProblems.push('cancel did not reach cancel_close')
+  }
+
+  // Minimize to tray keeps the core running.
+  await control('close_request=1&reset_calls=1')
+  await sleep(1400)
+  await cdp.eval(`document.getElementById('btn-close-tray').click()`)
+  await sleep(700)
+  journal = await (await fetch(`http://127.0.0.1:${shellPort}/api/control/calls`)).json()
+  if (!journal.calls.some(c => c.method === 'hide_to_tray')) {
+    closeProblems.push('minimize-to-tray did not reach hide_to_tray')
+  }
+
+  // Close app must go through quit_app (which saves settings and stops the core).
+  await control('close_request=1&reset_calls=1')
+  await sleep(1400)
+  await cdp.eval(`document.getElementById('btn-close-quit').click()`)
+  await sleep(700)
+  journal = await (await fetch(`http://127.0.0.1:${shellPort}/api/control/calls`)).json()
+  if (!journal.calls.some(c => c.method === 'quit_app')) {
+    closeProblems.push('close-app did not reach quit_app')
+  }
+  report.failures.push(...closeProblems)
+  report.scenarios.push({ name: 'close-confirmation', measured: { closeDialog, afterCancel },
+    screenshot: await shot('16-close-confirm'), problems: closeProblems })
+  await control('close_request=0&running=0&immersive=0&ui_theme=&ui_lang=zh')
+
   report.ok = report.failures.length === 0 && report.consoleErrors.length === 0
   fs.mkdirSync(path.dirname(outFile), { recursive: true })
   fs.writeFileSync(outFile, JSON.stringify(report, null, 2))

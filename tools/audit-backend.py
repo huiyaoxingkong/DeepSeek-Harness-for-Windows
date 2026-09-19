@@ -312,6 +312,50 @@ def main() -> int:
         check("auto-start boot path preseeks the store then starts the server",
               calls == ["preseed", "start"], str(calls))
 
+        # ------------------------------------------------------ close / shutdown
+        check("get_state exposes closeConfirm", "closeConfirm" in app_block,
+              str(app_block.get("closeConfirm")))
+        check("close confirmation is on by default",
+              bridge.get_state()["app"]["closeConfirm"] is True)
+        # With confirmation on, the native close is cancelled and the shell asks.
+        first = bridge._on_closing()
+        check("window close is deferred for confirmation", first is False, str(first))
+        polled = bridge.poll_tray()
+        check("poll_tray reports the pending close request",
+              polled.get("close") is True, json.dumps(polled, ensure_ascii=False))
+        check("cancel_close clears the request",
+              bridge.cancel_close().get("ok") is True
+              and bridge.poll_tray().get("close") is False)
+        check("hide_to_tray is safe without a window",
+              bridge.hide_to_tray().get("ok") is True)
+        # With confirmation off, the legacy behaviour applies.
+        bridge.save_settings({"close_confirm": False, "close_to_tray": False})
+        check("close_confirm=False lets the close proceed (no tray mode)",
+              bridge._on_closing() is True)
+        bridge.save_settings({"close_to_tray": True})
+        check("close_confirm=False + close_to_tray hides instead of closing",
+              bridge._on_closing() is False)
+        bridge.save_settings({"close_to_tray": False, "close_confirm": True})
+        check("settings restored to confirm-on", bridge._cfg.get("close_confirm") is True)
+
+        # quit_app must persist settings and stop the core before exiting.
+        bridge.save_settings({"port": 3177})
+        bridge._cfg.set("__audit_sentinel__", "saved-on-quit")
+        core_stopped: list[bool] = []
+        real_stop = bridge._core.stop
+        bridge._core.stop = lambda: (core_stopped.append(True), (True, "stopped"))[1]
+        try:
+            quit_result = bridge.quit_app()
+        finally:
+            bridge._core.stop = real_stop
+        check("quit_app reports ok", quit_result.get("ok") is True)
+        check("quit_app stops the core server", core_stopped == [True], str(core_stopped))
+        on_disk = json.load(open(os.path.join(scratch, "config.json"), encoding="utf-8"))
+        check("quit_app saves settings to disk before exiting",
+              on_disk.get("__audit_sentinel__") == "saved-on-quit",
+              f"port={on_disk.get('port')} sentinel={on_disk.get('__audit_sentinel__')}")
+        check("quit_app marks the app as quitting", bridge._quitting is True)
+
         failed = [name for name, ok, _ in RESULTS if not ok]
         print("\n" + "=" * 62)
         print(f"backend feature audit: {len(RESULTS) - len(failed)}/{len(RESULTS)} passed")

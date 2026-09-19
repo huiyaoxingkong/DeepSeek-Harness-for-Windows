@@ -137,6 +137,8 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
     # Seconds a start_server call is made to take, so scenarios can interact
     # while the shell is still waiting for the core to come up.
     start_delay = 0.0
+    # Set to True by the driver to mimic "the user pressed the window X".
+    close_request = False
     # Core-update state the UI polls (phase/progress/message/canUpdate).
     update: dict = {
         "phase": "idle", "progress": 0.0, "message": "", "remote": None,
@@ -237,7 +239,15 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
         if method == "read_log":
             return "(stub) no log"
         if method == "poll_tray":
-            return {"ok": True, "cmd": ""}
+            close = type(self).close_request
+            type(self).close_request = False   # consumed once, like the real bridge
+            return {"ok": True, "cmd": "", "close": close}
+        if method == "cancel_close":
+            return {"ok": True}
+        if method == "hide_to_tray":
+            return {"ok": True, "message": "已最小化到系统托盘（服务器继续运行）"}
+        if method == "quit_app":
+            return {"ok": True}
         if method == "check_app_update":
             return {"ok": True, "current": "1.0.5-test", "hasUpdate": False, "latest": None}
         if method == "app_update_state":
@@ -297,6 +307,8 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
                 type(self).ui_theme = query["ui_theme"][0]
             if "start_delay" in query:
                 type(self).start_delay = float(query["start_delay"][0])
+            if "close_request" in query:
+                type(self).close_request = query["close_request"][0] == "1"
             return self._json({"ok": True, "running": self.running,
                                "immersive": self.immersive,
                                "calls": len(self.calls)})
