@@ -1,4 +1,4 @@
-# 1.0.5 修改列表（待确认后打包上传）
+﻿# 1.0.5 修改列表（待确认后打包上传）
 
 **状态**：代码与内核已就绪、已本地提交；**尚未打包、尚未上传**
 **基线**：上一发布提交 `e168454`（v1.0.4）
@@ -71,7 +71,7 @@
 | --- | --- |
 | `tools/test-1.0.5.py` | **119 项**回归（长路径/只读/junction、入口解析、启动梯度、token 地址、健康检查、换核回滚、UI 同步、解码、CSS 不变式、重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验） |
 | `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 |
-| `tools/audit-backend.py` | **49 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法并校验返回结构与持久化 |
+| `tools/audit-backend.py` | **52 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法并校验返回结构与持久化 |
 | `tools/check-duplicate-ids.py` | 单独排查 HTML 重复 id（会被 `getElementById` 静默绑定到错误元素） |
 | `tools/immersive-check/cdp_probe.mjs`、`stub_server.py`、`diag_removal.py` | Edge/WebView2 同内核无头驱动：**13 个场景**（8 个布局 + 真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透并核对「按钮 → 桥方法」+ 取消更新 + 新手引导 + 语言切换）+ 截图；`diag_removal.py` 用于诊断删不掉的目录 |
 | `tools/core-update-test/run_core_update.py` | 用启动器自身的更新管线在实例目录真机升级/降级 |
@@ -100,7 +100,7 @@
 | --- | --- |
 | `tools/test-1.0.5.py`（含新工具链运行） | **119/119 通过** |
 | `tools/audit-features.py` | **ALL CHECKS PASS**（无缺失/重复 id、无未实现按钮、无未实现桥方法、示例插件未随包） |
-| `tools/audit-backend.py` | **49/49 通过**（全部 Bridge 方法可用且返回结构正确） |
+| `tools/audit-backend.py` | **52/52 通过**（全部 Bridge 方法可用且返回结构正确） |
 | `tools/immersive-check/`（Edge 153 无头，13 场景） | **13/13 通过**；修复前退出全屏 iframe=980×150，修复后 980×622；外观 `rgb(14,17,22)`→`rgb(244,246,250)`；导航「◇插件」→「◇Plugins」；取消更新可点击并调用 `cancel_update` |
 | 真机升级 `0.1.1-rc.2 → 0.1.6-alpha.2` | 通过（备份回收、健康检查 exit 0、HTTP 200） |
 | 真机降级 `0.1.6-alpha.2 → 0.1.1-rc.2` | 通过（裸地址 HTTP 200，旧内核无需 token） |

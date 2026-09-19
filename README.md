@@ -1,4 +1,4 @@
-# DeepSeek Harness Desktop
+﻿# DeepSeek Harness Desktop
 
 将 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）
 封装为 Windows 桌面应用：
@@ -97,7 +97,7 @@
   并带桥调用日志核对「按钮 → 桥方法」是否真的打通。
 - `tools/audit-features.py`：静态交叉核对（DOM id 引用/重复、`callApi` ↔ Bridge 方法、
   按钮是否有实现、示例插件是否随包）。
-- `tools/audit-backend.py`：**49 项**后端功能核对（对临时实例逐个调用全部 Bridge 方法，
+- `tools/audit-backend.py`：**52 项**后端功能核对（对临时实例逐个调用全部 Bridge 方法，
   校验返回结构与持久化，含 API Key 的 DPAPI 加密往返）。
 - `tools/core-update-test/`：用启动器自身的更新管线在 `dist\DeepSeek Harness` 实例上真机
   升级 0.1.1-rc.2 → 0.1.6-alpha.2、降级回 0.1.1-rc.2、再升级，全部通过；启动梯度 10/10、

@@ -1,4 +1,4 @@
-# DeepSeek Harness for Windows v1.0.5 发布声明
+﻿# DeepSeek Harness for Windows v1.0.5 发布声明
 
 **发布日期**：2026-09-20
 **项目主页**：https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows
@@ -161,7 +161,7 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 | --- | --- | --- |
 | `tools/test-1.0.5.py` | **119 项**：超 MAX_PATH 删除、只读文件、junction 不跟随、入口解析 5 种布局、启动梯度、内核打印地址（token/裸地址/无输出）、usage 错误识别、控制台输出解码、健康检查容忍度、换核 / 回滚 / 陈旧备份、外壳 UI 同步（含不降级）、CSS 不变式、**重复 id / 主题加载 / i18n 空白匹配 / 取消更新控件 / 示例插件不随包 / 卸载校验** | **119/119 通过** |
 | `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 | **ALL CHECKS PASS** |
-| `tools/audit-backend.py` | **49 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法，校验返回结构与持久化（含 API Key 的 DPAPI 加密往返） | **49/49 通过** |
+| `tools/audit-backend.py` | **52 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法，校验返回结构与持久化（含 API Key 的 DPAPI 加密往返） | **52/52 通过** |
 | `tools/immersive-check/` | Edge 153（与随应用 WebView2 同内核）无头驱动真实点击：8 个布局场景 + 真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透（核对「按钮 → 桥方法」）+ 取消更新 + 新手引导 + 语言切换，共 **13 个场景** | **13/13 通过**（修复前 6 个场景失败） |
 | `tools/core-update-test/run_core_update.py` | 用启动器自身的更新管线，在 `dist\DeepSeek Harness` 开发实例里真实下载 → 构建 → 换核 → 健康检查 → 启动校验 | 升级 / 降级 / 再升级 **全部通过** |
 | `tools/core-update-test/test_launch_ladder.py` | 真实 dsh CLI：故意把坏参数放在候选梯度最前面，验证自动降级并记住可用组合 | **10/10 通过**（0.1.1-rc.2 与 0.1.6-alpha.2 各一轮） |

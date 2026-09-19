@@ -285,6 +285,32 @@ def main() -> int:
 
         # ------------------------------------------------------------ auto launch
         check("_auto_launch_enabled is readable", isinstance(bridge._auto_launch_enabled(), bool))
+        # Registry round-trip, restored to its original value afterwards.
+        original = bridge._auto_launch_enabled()
+        try:
+            written = bridge.set_auto_launch({"enabled": True})
+            enabled_ok = written.get("ok") is True and bridge._auto_launch_enabled() is True
+            cleared = bridge.set_auto_launch({"enabled": False})
+            disabled_ok = cleared.get("ok") is True and bridge._auto_launch_enabled() is False
+            check("set_auto_launch writes and clears the Run key",
+                  enabled_ok and disabled_ok,
+                  f"enable={written.get('ok')} disable={cleared.get('ok')}")
+        finally:
+            bridge.set_auto_launch({"enabled": original})
+        check("auto-launch setting restored to its original value",
+              bridge._auto_launch_enabled() == original, f"original={original}")
+
+        # ------------------------------------------------------ boot behaviour
+        calls: list[str] = []
+        real_preseed, real_start = bridge._preseed_store, bridge.start_server
+        bridge._preseed_store = lambda: calls.append("preseed")
+        bridge.start_server = lambda: calls.append("start") or {"ok": True}
+        try:
+            bridge._boot_with_preseed()
+        finally:
+            bridge._preseed_store, bridge.start_server = real_preseed, real_start
+        check("auto-start boot path preseeks the store then starts the server",
+              calls == ["preseed", "start"], str(calls))
 
         failed = [name for name, ok, _ in RESULTS if not ok]
         print("\n" + "=" * 62)
