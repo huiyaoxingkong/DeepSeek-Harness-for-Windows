@@ -161,7 +161,11 @@ if (-not ((Get-Item $probe -Force).Attributes -match 'ReparsePoint')) {
 }
 $manifestPath = Join-Path $installCopy "core\junctions.json"
 if (-not (Test-Path $manifestPath)) { throw "core junctions.json missing after update" }
-$manifestCount = @(Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).Count
+# NB: `@(Get-Content … | ConvertFrom-Json).Count` reports 1: PowerShell 5.1 puts
+# the parsed array on the pipeline as a single object, so @() wraps it whole.
+# Assign first, then count.
+$manifest = ConvertFrom-Json (Get-Content $manifestPath -Raw -Encoding UTF8)
+$manifestCount = ($manifest | Measure-Object).Count
 Write-Host "  workspace junction restored; manifest lists $manifestCount junction(s)"
 if ($manifestCount -lt 100) { throw "junctions.json looks truncated ($manifestCount entries)" }
 Write-Host ""
