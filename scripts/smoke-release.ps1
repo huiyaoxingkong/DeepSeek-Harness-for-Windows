@@ -3,7 +3,7 @@
 #   - upgrade dry-run: run the Update exe inside a COPY of the install dir
 #     with no-launch.flag (post-update.bat bails out early)
 param(
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [ValidateSet("Lazy", "Minimal")]
     [string]$Flavor = "Lazy"
 )

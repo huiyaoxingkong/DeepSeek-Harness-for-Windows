@@ -16,6 +16,11 @@ v1.0.5 是**缺陷修复版**，解决三件事：
 3. **全版本内核适配**：内核入口、启动参数、配置转储均改为“探测式”，
    升级到新内核或回退到旧内核都能正常启动，不再依赖某个具体版本的路径与命令行写法。
 
+本版**随包内核升级到上游最新版**：`dsh 0.1.6-alpha.2`
+（tag `dsh-v0.1.6-alpha.2`，upstream commit `ddefc45`，2026-09-17），
+安装后无需联网即可直接使用最新内核；旧内核仍可通过「核心更新」页选择版本回退
+（已在开发实例实测升级 / 降级 / 再升级）。
+
 同时修复了“升级包不会刷新外壳界面”的发布缺陷：1.0.3 / 1.0.4 的安装即使升级到新版，
 外壳界面也不会被更新，等于修好的 bug 送不到用户手里。
 
@@ -156,6 +161,7 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 
 | 模块 | 变更 |
 | --- | --- |
+| 随包内核 | `core\` 更新为上游最新版 **dsh 0.1.6-alpha.2**（tag `dsh-v0.1.6-alpha.2`，commit `ddefc45`，2026-09-17）：重新构建（`pnpm install` + `pnpm build`）、重定位 3438 个 pnpm workspace junction、写入 `.dsh-desktop-info.json` / `.upstream-commit` 标记 |
 | 外壳 UI | `app/ui/style.css`：iframe / `.frame-empty` 绝对定位铺满；沉浸模式保持 `position: relative`；去除双滚动条。`app/ui/app.js`：启动服务器后使用内核打印的地址（含 token） |
 | 内核管理 | `app/homes.py` 新增 `remove_tree()`（`\\?\` 长路径、只读、junction 安全）、`long_path()`、`console_text_kwargs()`、`version_newer()`；`app/updater.py` 换核前校验、失败回滚、成功校验、陈旧备份不阻塞、`cleanup_stale_core_backups()`；启动时后台清理 |
 | 内核适配 | `app/core_api.py`：`resolve_cli_entry()`、入口/版本解析回退链、7 级启动候选梯度、按次日志判定、日志句柄回收、**内核打印地址（token）发现**；`app/homes.py` 健康检查多形态容忍 |
@@ -184,7 +190,7 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 
 | 组件 | 版本 | 用途 | 许可证 | 链接 |
 | --- | --- | --- | --- | --- |
-| deepseek-ai/deepseek-harness | dsh-0.1.1-rc.2（随包）/ 已实测 dsh-0.1.6-alpha.2 | 核心服务器与 Web 界面 | Apache-2.0（遵循上游声明） | https://github.com/deepseek-ai/deepseek-harness |
+| deepseek-ai/deepseek-harness | dsh-0.1.6-alpha.2（随包，2026-09-17，commit `ddefc45`；已实测 0.1.1-rc.2 ↔ 0.1.6-alpha.2 升级/降级） | 核心服务器与 Web 界面 | Apache-2.0（遵循上游声明） | https://github.com/deepseek-ai/deepseek-harness |
 | dsh-market/dsh-market | dshmarket 1.33.0（官方 tgz 离线重打包） | 插件商店（内置预装，初始关闭，启用离线） | MIT | https://github.com/dsh-market/dsh-market |
 | Git for Windows | 2.55.0.5（PortableGit） | 懒人包内置 git / Git Bash | GPL-2.0 | https://github.com/git-for-windows/git |
 | pywebview | 6.2.1 | 桌面窗口（WebView2 宿主） | MIT | https://github.com/r0x0r/pywebview |
