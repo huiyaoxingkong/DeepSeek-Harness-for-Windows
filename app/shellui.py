@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import time
 
 import homes
 
@@ -33,6 +32,15 @@ MARKER = ".version"
 # ever grows them: the user plugin root lives in <data>\shell-plugins, but a
 # future bundle could ship a staging folder worth protecting.
 _SKIP = {".shell-plugin-staging"}
+
+# Paths earlier releases shipped inside ui\ and 1.0.5 deliberately dropped
+# (the example shell plugins now live in examples/shell-plugins). A refresh
+# deletes them so upgraded installs match a fresh 1.0.5 install.
+LEGACY_REMOVED = (
+    "plugins/example-status",
+    "plugins/example-pet",
+    "plugins/plugin-dev-kit",
+)
 
 
 def bundled_ui_dir(app_dir: str) -> str:
@@ -61,7 +69,12 @@ def write_marker(ui_dir: str, version: str) -> None:
 
 
 def _copy_tree(src: str, dst: str) -> None:
-    """Copy *src* into *dst* (created), skipping the protected names."""
+    """Copy *src* over *dst* (created), skipping the protected names.
+
+    A plain copy, not a mirror: files the user added to the live folder are
+    left in place. The live folder is the documented customization point, so
+    only files this bundle actually ships are replaced.
+    """
     os.makedirs(dst, exist_ok=True)
     for entry in os.listdir(src):
         if entry in _SKIP:
@@ -72,6 +85,28 @@ def _copy_tree(src: str, dst: str) -> None:
             shutil.copytree(source, target, dirs_exist_ok=True)
         else:
             shutil.copy2(source, target)
+
+
+def _remove_legacy_paths(live: str) -> list[str]:
+    """Drop shipped files that newer releases no longer include.
+
+    A merge-refresh keeps everything it does not ship, so files we ourselves
+    shipped earlier (and deliberately removed) must be deleted explicitly —
+    otherwise the example shell plugins would live on in upgraded installs.
+    """
+    removed: list[str] = []
+    for rel in LEGACY_REMOVED:
+        target = os.path.join(live, *rel.split("/"))
+        if os.path.isdir(target):
+            if homes.remove_tree(target):
+                removed.append(rel)
+        elif os.path.isfile(target):
+            try:
+                os.remove(target)
+                removed.append(rel)
+            except OSError:
+                pass
+    return removed
 
 
 def sync_shell_ui(app_dir: str, version: str) -> dict:
@@ -118,33 +153,29 @@ def sync_shell_ui(app_dir: str, version: str) -> dict:
                  live_version, shipped_version)
         return result
 
-    # Different (or unmarked) live UI: keep it, then install the shipped one.
+    # Different (or unmarked) live UI: refresh ours in place, keep theirs.
     backup = os.path.join(
         app_dir, f"ui-backup-{live_version}" if live_version else "ui-backup")
-    if os.path.lexists(backup) and not homes.remove_tree(backup):
-        # A backup we cannot clear must not block the refresh.
-        backup = f"{backup}-{time.strftime('%Y%m%d-%H%M%S')}"
-    try:
-        os.replace(live, backup)
-    except OSError as exc:
-        result.update(reason=f"could not archive the live ui: {exc}")
-        log.warning("shell UI refresh aborted: %s", exc)
-        return result
+    if not os.path.isdir(backup):
+        # One-time snapshot for recovery (the shell UI is ~150 KB, so this is
+        # cheap). Never overwrite an existing snapshot: it may hold the user's
+        # pre-upgrade files.
+        try:
+            shutil.copytree(live, backup)
+        except OSError as exc:
+            log.warning("shell UI snapshot failed (%s); continuing with the refresh", exc)
     try:
         _copy_tree(bundled, live)
     except OSError as exc:
-        log.warning("shell UI refresh failed, restoring the previous ui: %s", exc)
-        shutil.rmtree(live, ignore_errors=True)
-        try:
-            os.replace(backup, live)
-        except OSError as restore_exc:
-            log.error("shell UI restore failed: %s", restore_exc)
+        log.warning("shell UI refresh failed: %s", exc)
         result.update(reason=f"refresh failed: {exc}")
         return result
+    removed = _remove_legacy_paths(live)
     write_marker(live, shipped_version)
     result.update(action="refreshed", version=shipped_version,
-                  backup=os.path.basename(backup),
-                  reason=f"replaced ui {live_version or '(unmarked)'} with {shipped_version}")
-    log.info("shell UI refreshed: %s -> %s (previous folder kept as %s)",
-             live_version or "(unmarked)", shipped_version, os.path.basename(backup))
+                  backup=os.path.basename(backup), removed=removed,
+                  reason=f"merged ui {live_version or '(unmarked)'} -> {shipped_version}")
+    log.info("shell UI refreshed: %s -> %s (snapshot: %s%s)",
+             live_version or "(unmarked)", shipped_version, os.path.basename(backup),
+             f", removed {', '.join(removed)}" if removed else "")
     return result

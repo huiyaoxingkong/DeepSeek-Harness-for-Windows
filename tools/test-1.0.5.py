@@ -1,4 +1,4 @@
-﻿"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
+"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
 
 Covers the three defect families fixed in 1.0.5:
 
@@ -573,24 +573,39 @@ def test_shell_ui_sync_refreshes_stale_installs() -> None:
     import shellui  # noqa: PLC0415 - imported here so the module set stays obvious
 
     with temp_dir() as app:
-        # A 1.0.4 install: live ui is the old build, _internal ships 1.0.5.
-        _fake_ui(os.path.join(app, "ui"), "1.0.4", "OLD-BUGGY")
+        # A 1.0.4 install: live ui is the old build, plus a file the user added
+        # and an example plugin 1.0.4 shipped; _internal ships 1.0.5.
+        live = _fake_ui(os.path.join(app, "ui"), "1.0.4", "OLD-BUGGY")
+        with open(os.path.join(live, "custom.css"), "w", encoding="utf-8") as fh:
+            fh.write("/* the user's own skin */")
+        legacy = os.path.join(live, "plugins", "example-pet")
+        os.makedirs(legacy, exist_ok=True)
+        with open(os.path.join(legacy, "plugin.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
         _fake_ui(os.path.join(app, "_internal", "ui"), "1.0.5", "FIXED")
+
         report = shellui.sync_shell_ui(app, "1.0.5")
         check("stale ui is refreshed", report["action"] == "refreshed",
               json.dumps(report, ensure_ascii=False))
         with open(os.path.join(app, "ui", "style.css"), encoding="utf-8") as fh:
-            check("live ui now carries the fix", fh.read() == "FIXED")
-        check("previous ui kept as a backup folder",
-              os.path.isfile(os.path.join(app, report["backup"], "style.css")))
-        with open(os.path.join(app, report["backup"], "style.css"),
-                  encoding="utf-8") as fh:
-            check("backup keeps the user's files", fh.read() == "OLD-BUGGY")
+            check("shipped file updated in place", fh.read() == "FIXED")
+        check("user-added file survives the refresh",
+              os.path.isfile(os.path.join(app, "ui", "custom.css")))
+        check("example plugin dropped from the live ui", not os.path.isdir(legacy),
+              json.dumps(report.get("removed")))
+        backup = os.path.join(app, report["backup"])
+        check("pre-upgrade ui snapshotted for recovery",
+              os.path.isfile(os.path.join(backup, "style.css"))
+              and os.path.isfile(os.path.join(backup, "custom.css")))
+        with open(os.path.join(backup, "style.css"), encoding="utf-8") as fh:
+            check("snapshot keeps the previous build", fh.read() == "OLD-BUGGY")
         check("marker updated",
               shellui.read_marker(os.path.join(app, "ui")) == "1.0.5")
         second = shellui.sync_shell_ui(app, "1.0.5")
         check("second run is a no-op", second["action"] == "none",
               json.dumps(second, ensure_ascii=False))
+        check("a second refresh does not clobber the snapshot",
+              os.path.isfile(os.path.join(backup, "custom.css")))
 
 
 @case
@@ -751,8 +766,13 @@ def test_post_update_bat_refreshes_any_stale_ui() -> None:
           'if not exist "%~dp0ui\\.version"' not in text, text[:0])
     check("post-update.bat compares the marker with this release",
           'findstr /x /c:"1.0.5" "%~dp0ui\\.version"' in text)
-    check("post-update.bat still keeps a backup",
-          'rename "%~dp0ui" "ui-backup"' in text)
+    check("post-update.bat snapshots the pre-upgrade ui",
+          'robocopy "%~dp0ui" "%~dp0ui-backup"' in text)
+    check("post-update.bat merges instead of replacing the ui folder",
+          'robocopy "%~dp0_internal\\ui" "%~dp0ui"' in text
+          and 'rename "%~dp0ui" "ui-backup"' not in text)
+    check("post-update.bat removes the example shell plugins",
+          "example-pet" in text and "plugin-dev-kit" in text)
 
 
 # ------------------------------------------------- shell UI static guards

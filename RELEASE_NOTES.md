@@ -1,4 +1,4 @@
-# DeepSeek Harness for Windows v1.0.5 发布声明
+﻿# DeepSeek Harness for Windows v1.0.5 发布声明
 
 **发布日期**：2026-09-20
 **项目主页**：https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows
@@ -191,19 +191,29 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 
 ### 5. 升级后外壳界面不刷新（发布链路缺陷）
 
+
 1.0.4 的 `post-update.bat` 只在 `ui\.version` 标记**不存在**时才安装随包外壳 UI。
 所有 1.0.3 / 1.0.4 安装都已有该标记，因此升级后仍然使用旧界面——本次修好的
 全屏 bug 也就永远送不到用户手里。
 
-**修复**：安装脚本按版本号比对刷新（旧目录保留为 `ui-backup`）；启动器每次启动也会
-比对随包 UI 与在装 UI 的版本并自动刷新（覆盖手动复制、极简包、只换 `_internal` 等路径），
-旧目录保留为 `ui-backup-<旧版本>`，用户自定义的界面文件不会静默丢失。
+**修复**：安装脚本与启动器都按版本号比对刷新，采用**合并式刷新**：
+
+| 项目 | 行为 |
+| --- | --- |
+| 随包 UI 文件 | 就地更新（index.html / style.css / app.js / i18n.js / themes / .version …） |
+| 用户自己添加的文件 | **保持不动**（例如 `ui\custom.css`）——升级不会“清空”用户界面 |
+| 升级前快照 | 整个 `ui\` 复制为 `ui-backup[-版本号]`（约 150 KB，只做一次），用户改过的文件可随时取回 |
+| 已停发的示例插件 | `plugin-dev-kit` / `example-status` / `example-pet` 从在装 `ui\plugins\` 中清除 |
+| 版本方向 | 只有在装 UI 更旧时才刷新，绝不降级 |
+
+（该合并语义由 `${env:...}` 冒烟测试 `smoke-release.ps1` 的「ui/ was clobbered!」检查强制保证：
+用户文件必须存活、随包文件必须刷新、示例插件必须消失、快照必须保留。）
 
 ## 三、测试与验证
 
 | 测试 | 内容 | 结果 |
 | --- | --- | --- |
-| `tools/test-1.0.5.py` | **147 项**：超 MAX_PATH 删除、只读文件、junction 不跟随、入口解析 5 种布局、启动梯度、内核打印地址（token/裸地址/无输出）、usage 错误识别、控制台输出解码、健康检查容忍度、换核 / 回滚 / 陈旧备份、外壳 UI 同步（含不降级）、CSS 不变式、**重复 id / 主题加载 / i18n 空白匹配 / 取消更新控件 / 示例插件不随包 / 卸载校验** | **147/147 通过** |
+| `tools/test-1.0.5.py` | **152 项**：超 MAX_PATH 删除、只读文件、junction 不跟随、入口解析 5 种布局、启动梯度、内核打印地址（token/裸地址/无输出）、usage 错误识别、控制台输出解码、健康检查容忍度、换核 / 回滚 / 陈旧备份、外壳 UI 同步（含不降级）、CSS 不变式、**重复 id / 主题加载 / i18n 空白匹配 / 取消更新控件 / 示例插件不随包 / 卸载校验** | **152/152 通过** |
 | `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 | **ALL CHECKS PASS** |
 | `tools/audit-backend.py` | **65 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法，校验返回结构与持久化（含 API Key 的 DPAPI 加密往返） | **65/65 通过** |
 | `tools/immersive-check/` | Edge 153（与随应用 WebView2 同内核）无头驱动真实点击：8 个布局场景 + 真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透（核对「按钮 → 桥方法」）+ 取消更新 + 新手引导 + 语言切换，共 **16 个场景** | **16/16 通过**（修复前 6 个场景失败） |

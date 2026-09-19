@@ -59,6 +59,11 @@ function git(gitArgs, options = {}) {
   const caFile = path.join(ROOT, 'app', 'assets', 'cacert.pem')
   const common = ['-c', 'http.sslBackend=openssl']
   if (fs.existsSync(caFile)) common.push('-c', `http.sslCAInfo=${caFile}`)
+  // Credential helper chain: the global helper-selector (Git Credential
+  // Manager) blocks waiting for a GUI here, while the plain wincred helper
+  // reads the token already stored in Windows Credential Manager. Resetting
+  // the chain first (`credential.helper=`) is what skips the selector.
+  common.push('-c', 'credential.helper=', '-c', 'credential.helper=wincred')
   const out = execFileSync('git', [...common, ...gitArgs], {
     cwd: ROOT, env, encoding: 'utf-8', stdio: options.stdio || ['ignore', 'pipe', 'pipe'],
   })
@@ -69,16 +74,23 @@ function resolveToken() {
   if (args.get('token')) return args.get('token')
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN
-  try {
-    const out = execFileSync('git', ['credential', 'fill'], {
-      cwd: ROOT,
-      input: 'protocol=https\nhost=github.com\n\n',
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'ignore'],
-    })
-    const match = /^password=(.+)$/m.exec(out)
-    if (match) return match[1].trim()
-  } catch { /* no cached credential */ }
+  // Ask git for the stored credential (wincred helper, chain reset above).
+  for (const helperArgs of [
+    ['-c', 'credential.helper=', '-c', 'credential.helper=wincred', 'credential', 'fill'],
+    ['credential', 'fill'],
+  ]) {
+    try {
+      const out = execFileSync('git', helperArgs, {
+        cwd: ROOT,
+        input: 'protocol=https\nhost=github.com\n\n',
+        encoding: 'utf-8',
+        timeout: 15000,
+        stdio: ['pipe', 'pipe', 'ignore'],
+      })
+      const match = /^password=(.+)$/m.exec(out)
+      if (match) return match[1].trim()
+    } catch { /* try the next helper form */ }
+  }
   return ''
 }
 
@@ -107,7 +119,9 @@ async function api(token, method, url, body, extraHeaders = {}) {
       }
       return data
     } catch (error) {
-      if (attempt === 5) throw error
+      // A 4xx is a definitive answer (404 = no such release yet); only
+      // transport/5xx failures are worth retrying.
+      if (attempt === 5 || (error.status >= 400 && error.status < 500)) throw error
       const delay = Math.min(3 * 2 ** (attempt - 1), 30)
       log(`  attempt ${attempt}/5 failed (${error.message}); retrying in ${delay}s…`)
       await sleep(delay * 1000)

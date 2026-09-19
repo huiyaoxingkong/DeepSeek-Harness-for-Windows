@@ -11,10 +11,16 @@ rem The live folder is kept as ui-backup either way.
 set "UI_CURRENT=0"
 if exist "%~dp0ui\.version" findstr /x /c:"1.0.5" "%~dp0ui\.version" >nul 2>&1 && set "UI_CURRENT=1"
 if "%UI_CURRENT%"=="0" (
-  if exist "%~dp0ui-backup" rmdir /s /q "%~dp0ui-backup" >nul 2>&1
-  if exist "%~dp0ui" rename "%~dp0ui" "ui-backup"
+  rem One-time snapshot of the pre-upgrade ui (the folder is ~150 KB): the shell
+  rem UI is user-editable, so keep a copy the user can fall back to.
+  if not exist "%~dp0ui-backup" if exist "%~dp0ui" robocopy "%~dp0ui" "%~dp0ui-backup" /E /NFL /NDL /NJH /NJS /NP >nul
+  rem Merge the shipped ui over the live one: files we ship are refreshed,
+  rem files the user added (custom.css etc.) are left untouched.
   if exist "%~dp0_internal\ui" robocopy "%~dp0_internal\ui" "%~dp0ui" /E /NFL /NDL /NJH /NJS /NP >nul
-  if not exist "%~dp0ui" robocopy "%~dp0ui-backup" "%~dp0ui" /E /NFL /NDL /NJH /NJS /NP >nul
+  rem Example shell plugins are not shipped since 1.0.5: drop them if present.
+  for %%P in (example-status example-pet plugin-dev-kit) do (
+    if exist "%~dp0ui\plugins\%%P" rmdir /s /q "%~dp0ui\plugins\%%P" >nul 2>&1
+  )
   echo 1.0.5 > "%~dp0ui\.version"
 )
 rem 冒烟测试标记：存在 no-launch.flag 时不建快捷方式、不启动
