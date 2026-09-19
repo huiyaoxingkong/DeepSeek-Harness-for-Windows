@@ -128,7 +128,7 @@
               <button id="btn-add-store" class="btn primary" style="flex:0 0 auto;">添加商店源</button>
             </div>
             <div class="key-row" style="max-width:none;margin-top:8px;">
-              <input id="store-catalog" type="text" placeholder="插件目录地址 plugins.json（可选，填入后该源目录并入上方商店）" spellcheck="false">
+              <input id="store-catalog-url" type="text" placeholder="插件目录地址 plugins.json（可选，填入后该源目录并入上方商店）" spellcheck="false">
             </div>
           </div>
         </div>
@@ -376,7 +376,9 @@
           </ol>
           <div id="update-progress" class="progress hidden">
             <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
-            <div id="progress-message" class="progress-message"></div>
+            <div class="progress-message" id="progress-message"></div>
+            <button id="btn-cancel-update" class="btn ghost small hidden" type="button"
+                    style="margin-top:10px;">取消更新</button>
           </div>
         </div>
 

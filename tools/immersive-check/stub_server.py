@@ -79,7 +79,9 @@ FAKE_CORE_PAGE = """<!doctype html>
 
 
 def _state(core_port: int, running: bool = False, immersive: bool = False,
-           core_url: str = "") -> dict:
+           core_url: str = "", update: dict | None = None,
+           onboarding_done: bool = True, ui_theme: str = "",
+           ui_lang: str = "zh") -> dict:
     url = core_url or f"http://127.0.0.1:{core_port}"
     return {
         "app": {
@@ -94,12 +96,12 @@ def _state(core_port: int, running: bool = False, immersive: bool = False,
             "githubMirror": "",
             "autoStart": False,
             "openBrowser": False,
-            "onboardingDone": True,
+            "onboardingDone": onboarding_done,
             "closeToTray": False,
             "autoLaunch": False,
             "dataDir": os.path.join(REPO, "app", "data"),
             "dshHome": "",
-            "uiState": {"immersive": immersive},
+            "uiState": {"immersive": immersive, "theme": ui_theme, "lang": ui_lang},
             "health": {"skipped": True, "ok": False},
         },
         "server": {
@@ -116,7 +118,7 @@ def _state(core_port: int, running: bool = False, immersive: bool = False,
             "git": {"mode": "bundled", "path": "runtime\\git\\cmd\\git.exe"},
             "bash": {"mode": "bundled", "path": "runtime\\git\\bin\\bash.exe"},
         },
-        "update": {
+        "update": update or {
             "phase": "idle", "progress": 0.0, "message": "", "remote": None,
             "local": None, "canUpdate": False, "tag": "", "error": None,
         },
@@ -128,6 +130,16 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
     core_url = ""
     running = False
     immersive = False
+    onboarding_done = True
+    ui_theme = ""
+    ui_lang = "zh"
+    # Core-update state the UI polls (phase/progress/message/canUpdate).
+    update: dict = {
+        "phase": "idle", "progress": 0.0, "message": "", "remote": None,
+        "local": None, "canUpdate": False, "tag": "", "error": None,
+    }
+    # Every bridge method the shell asked for, in order (feature audit).
+    calls: list = []
 
     protocol_version = "HTTP/1.1"
 
@@ -152,8 +164,32 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
                    "application/json; charset=utf-8", status)
 
     def _bridge(self, method: str, payload: dict):
+        type(self).calls.append({"method": method, "payload": payload})
         if method == "get_state":
-            return _state(self.core_port, self.running, self.immersive, self.core_url)
+            return _state(self.core_port, self.running, self.immersive,
+                          self.core_url, self.update, self.onboarding_done,
+                          self.ui_theme, self.ui_lang)
+        if method == "set_onboarding_done":
+            type(self).onboarding_done = True
+            return {"ok": True}
+        if method == "check_update":
+            type(self).update = {
+                "phase": "done", "progress": 1.0, "message": "检查完成",
+                "remote": {"commit": "deadbeef1234", "date": "2026-09-17T00:00:00Z",
+                           "message": "audit remote commit"},
+                "local": {"commit": "cafebabe0000", "updatedAt": "2026-09-20 00:00:00"},
+                "canUpdate": True, "tag": "", "error": None,
+            }
+            return {"ok": True, "canUpdate": True, "remote": type(self).update["remote"],
+                    "local": type(self).update["local"], "message": "发现新版本，可更新"}
+        if method == "download_update":
+            type(self).update.update(phase="downloading", progress=0.1,
+                                     message="审计：正在下载源码…")
+            return {"ok": True, "message": "更新已开始"}
+        if method == "cancel_update":
+            type(self).update.update(phase="idle", progress=0.0,
+                                     message="更新已取消。", error=None)
+            return {"ok": True, "message": "更新已取消。"}
         if method == "start_server":
             type(self).running = True
             return {"ok": True, "message": "服务已启动（stub）", "port": self.core_port,
@@ -171,6 +207,10 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
         if method == "set_ui_state":
             if "immersive" in payload:
                 type(self).immersive = bool(payload["immersive"])
+            if "theme" in payload:
+                type(self).ui_theme = str(payload["theme"])
+            if "lang" in payload:
+                type(self).ui_lang = str(payload["lang"])
             return {"ok": True}
         if method == "list_shell_plugins":
             return {"plugins": []}
@@ -226,13 +266,35 @@ class _ShellHandler(http.server.SimpleHTTPRequestHandler):
             return self._json({"ok": True, "name": "dsh-desktop-ui-stub"})
         if parsed.path == "/api/control":
             # Test-driver hook: pin the canned state between scenarios.
-            query = urllib.parse.parse_qs(parsed.query)
+            # keep_blank_values matters: `ui_theme=` is how a scenario asks for
+            # the default theme again.
+            query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
             if "running" in query:
                 type(self).running = query["running"][0] == "1"
             if "immersive" in query:
                 type(self).immersive = query["immersive"][0] == "1"
+            if "reset_calls" in query:
+                type(self).calls = []
+            if "update_phase" in query:
+                type(self).update.update(
+                    phase=query["update_phase"][0],
+                    progress=float(query.get("update_progress", ["0.5"])[0]),
+                    message=query.get("update_message", ["审计：更新进行中"])[0],
+                    canUpdate=False)
+            if "update_idle" in query:
+                type(self).update.update(phase="idle", progress=0.0, message="")
+            if "onboarding" in query:
+                type(self).onboarding_done = query["onboarding"][0] == "1"
+            if "ui_lang" in query:
+                type(self).ui_lang = query["ui_lang"][0]
+            if "ui_theme" in query:
+                type(self).ui_theme = query["ui_theme"][0]
             return self._json({"ok": True, "running": self.running,
-                               "immersive": self.immersive})
+                               "immersive": self.immersive,
+                               "calls": len(self.calls)})
+        if parsed.path == "/api/control/calls":
+            # Bridge-call journal for the feature audit.
+            return self._json({"ok": True, "calls": type(self).calls})
         relative = urllib.parse.unquote(parsed.path.lstrip("/")) or "index.html"
         full = os.path.normpath(os.path.join(UI_ROOT, relative))
         if not full.startswith(os.path.normpath(UI_ROOT)):

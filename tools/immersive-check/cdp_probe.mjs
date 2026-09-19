@@ -206,7 +206,10 @@ async function main() {
   ws.addEventListener('message', event => {
     const msg = JSON.parse(event.data)
     if (msg.method === 'Runtime.exceptionThrown') {
-      consoleErrors.push(msg.params.exceptionDetails.text ?? 'exception')
+      const details = msg.params.exceptionDetails ?? {}
+      const text = [details.text, details.exception?.description ?? '']
+        .filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 300)
+      consoleErrors.push(text || 'exception')
     }
   })
 
@@ -226,6 +229,11 @@ async function main() {
   const load = async () => {
     await cdp.send('Page.navigate', { url: shellUrl })
     await sleep(2500)   // async init(): bridge polls, state, theme, plugins
+    // Headless pages have nobody to answer window.confirm/prompt: an unhandled
+    // dialog blocks the page forever (the preset buttons ask for confirmation).
+    await cdp.eval(`window.confirm = () => true;
+      window.alert = () => {};
+      window.prompt = (question, fallback) => (fallback === undefined ? '' : fallback);`)
   }
 
   /** Geometry assertions shared by every scenario. */
@@ -376,6 +384,276 @@ async function main() {
     }
     report.failures.push(...problems)
     report.scenarios.push({ name: 'real-core-workspace', measured: m8, problems })
+  }
+
+  // 9) Appearance (theme) system: the settings page must list the built-in
+  //    themes and clicking one must actually restyle the shell.
+  await control('running=0&immersive=0&onboarding=1&ui_theme=&ui_lang=zh')
+  await load()
+  await cdp.eval(`document.querySelector('.nav-item[data-page="settings"]').click()`)
+  await sleep(1200)
+  const themesBefore = await cdp.eval(`(() => {
+    const box = document.getElementById('themes-list');
+    const style = document.getElementById('shell-theme');
+    return {
+      chips: box ? box.querySelectorAll('[data-theme]').length : -1,
+      empty: !!document.querySelector('#themes-list .plugin-empty'),
+      bg: getComputedStyle(document.body).backgroundColor,
+      styleText: style ? style.textContent.slice(0, 60) : null,
+    };
+  })()`)
+  await cdp.eval(`(() => {
+    const chip = document.querySelector('#themes-list [data-theme="builtin-light"]');
+    if (chip) chip.click();
+  })()`)
+  await sleep(1200)
+  const themesAfter = await cdp.eval(`(() => {
+    const style = document.getElementById('shell-theme');
+    return {
+      bg: getComputedStyle(document.body).backgroundColor,
+      fg: getComputedStyle(document.body).color,
+      styleText: style ? style.textContent.slice(0, 80) : null,
+      styleLen: style ? style.textContent.length : 0,
+      active: (document.querySelector('#themes-list .theme-chip.on') || {}).dataset?.theme || '',
+    };
+  })()`)
+  const themeProblems = []
+  if (themesBefore.chips <= 0) themeProblems.push('no theme chips rendered on the settings page')
+  if (themesBefore.empty) themeProblems.push('theme list still shows the loading placeholder')
+  if (!themesAfter.styleText || themesAfter.styleLen < 20) {
+    themeProblems.push(`theme style element has no CSS: ${JSON.stringify(themesAfter.styleText)}`)
+  }
+  if (!themesAfter.styleText || !themesAfter.styleText.includes('--bg')) {
+    themeProblems.push('injected theme does not define CSS variables (bare path injected?)')
+  }
+  if (themesAfter.bg === themesBefore.bg) {
+    themeProblems.push(`body background unchanged after switching theme (${themesAfter.bg})`)
+  }
+  if (themesAfter.active !== 'builtin-light') {
+    themeProblems.push(`clicked theme not marked active: ${themesAfter.active}`)
+  }
+  report.scenarios.push({ name: 'appearance-themes', measured: { before: themesBefore, after: themesAfter },
+    screenshot: await shot('10-theme-light'), problems: themeProblems })
+  report.failures.push(...themeProblems)
+
+  // 10) Feature click-through: walk every shell page and press every visible,
+  //     enabled control, then check that the bridge methods those controls are
+  //     supposed to call were actually called (and that nothing threw).
+  if (args.get('feature-audit') === '1') {
+    await control('running=0&immersive=0&reset_calls=1')
+    await load()
+    const pages = ['workspace', 'plugins', 'settings', 'update', 'logs', 'about']
+    // Destructive/irreversible controls are deliberately not pressed:
+    //   btn-install-app-update spawns the upgrade bootstrap
+    //   btn-open-browser opens an external window (target churn)
+    const skip = new Set(['btn-install-app-update', 'btn-open-browser', 'btn-quit-for-update'])
+    const expected = {
+      workspace: ['start_server', 'set_ui_state', 'poll_tray'],
+      plugins: ['list_plugins', 'store_list', 'store_catalog', 'plugin_state', 'install_plugin'],
+      settings: ['get_state', 'save_settings', 'list_providers', 'list_instances', 'set_ui_state', 'get_api_key'],
+      update: ['list_core_releases', 'check_update', 'download_update', 'update_core',
+               'pick_core_archive', 'import_core'],
+      logs: ['read_log'],
+      about: ['check_app_update', 'download_app_update', 'app_update_state', 'list_plugins'],
+    }
+    const clicked = {}
+    const disabledControls = {}
+    // Fill the form-driven controls first: pressing them with empty inputs only
+    // exercises the validation branch, never the feature behind it.
+    const formValues = {
+      'store-name': 'audit-market',
+      'store-catalog-url': 'https://example.invalid/plugins.json',
+      'store-spec': '@audit/market',
+      'plugin-spec': '@audit/plugin',
+      'plugin-idea': 'audit idea',
+      'store-search': 'audit',
+    }
+    for (const page of pages) {
+      await cdp.eval(`document.querySelector('.nav-item[data-page="${page}"]').click()`)
+      await sleep(900)
+      await cdp.eval(`(() => {
+        const values = ${JSON.stringify(formValues)};
+        for (const [id, value] of Object.entries(values)) {
+          const el = document.getElementById(id);
+          if (el && 'value' in el) {
+            el.value = value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        }
+        return true;
+      })()`)
+      const ids = await cdp.eval(`Array.from(document.querySelectorAll('#page-${page} button'))
+        .map(b => b.id).filter(Boolean)`)
+      clicked[page] = []
+      disabledControls[page] = []
+      for (const id of ids) {
+        if (skip.has(id)) continue
+        const state = await cdp.eval(`(() => {
+          const b = document.getElementById(${JSON.stringify(id)});
+          if (!b) return 'absent';
+          if (b.disabled) return 'disabled';
+          if (b.closest('.hidden')) return 'hidden';
+          b.click();
+          return 'clicked';
+        })()`)
+        if (state === 'clicked') clicked[page].push(id)
+        else disabledControls[page].push(`${id}:${state}`)
+        await sleep(220)
+      }
+    }
+    await sleep(1500)
+    const journal = await (await fetch(`http://127.0.0.1:${shellPort}/api/control/calls`)).json()
+    const called = new Set(journal.calls.map(c => c.method))
+    const problems = []
+    // A method is only required when its control was actually pressable: some
+    // controls are gated on state (btn-update needs an available update,
+    // btn-import-core needs a picked file, btn-toggle-key needs a stored key),
+    // and a disabled control that never fires is correct behaviour, not a gap.
+    const conditional = {
+      'get_api_key': ['btn-toggle-key'],
+      'download_update': ['btn-update'],
+      'import_core': ['btn-import-core'],
+      'import_plugin': ['btn-import-plugin'],
+      'import_shell_plugin': ['btn-import-shell-plugin'],
+      'install_app_update': ['btn-install-app-update'],
+    }
+    const skippedMethods = []
+    for (const page of pages) {
+      for (const method of expected[page] || []) {
+        if (called.has(method)) continue
+        const owners = conditional[method] || []
+        const wasPressed = owners.some(id => (clicked[page] || []).includes(id))
+        const wasDisabled = owners.some(id => (disabledControls[page] || []).some(entry => entry.startsWith(id + ':')))
+        if (owners.length > 0 && wasDisabled && !wasPressed) {
+          skippedMethods.push(`${method} (control disabled by state: ${owners.join('/')})`)
+          continue
+        }
+        problems.push(`${page}: bridge method never called: ${method}`)
+      }
+      if ((clicked[page] || []).length === 0) problems.push(`${page}: no control could be pressed`)
+    }
+    const errorScenarios = report.consoleErrors
+    report.scenarios.push({
+      name: 'feature-clickthrough',
+      measured: { clicked, disabledControls, skippedMethods,
+                  calledMethods: [...called].sort(), bridgeCalls: journal.calls.length },
+      screenshot: await shot('11-feature-audit'),
+      problems,
+    })
+    report.failures.push(...problems)
+    if (errorScenarios.length > 0) {
+      report.failures.push(`console errors during click-through: ${errorScenarios.slice(0, 3).join(' | ')}`)
+    }
+
+    // Cancel control: while a core update is running the progress card must
+    // offer cancellation (the bridge implemented cancel_update long before the
+    // UI exposed it — an unreachable feature).
+    await control('update_phase=building&update_progress=0.42&update_message=audit-building&reset_calls=1')
+    await load()
+    await cdp.eval(`document.querySelector('.nav-item[data-page="update"]').click()`)
+    await sleep(900)
+    const cancelState = await cdp.eval(`(() => {
+      const btn = document.getElementById('btn-cancel-update');
+      const prog = document.getElementById('update-progress');
+      return {
+        buttonExists: !!btn,
+        buttonHidden: btn ? btn.classList.contains('hidden') : null,
+        buttonDisabled: btn ? btn.disabled : null,
+        progressVisible: prog ? !prog.classList.contains('hidden') : null,
+        message: (document.getElementById('progress-message') || {}).textContent || '',
+      };
+    })()`)
+    await cdp.eval(`(() => { const b = document.getElementById('btn-cancel-update'); if (b && !b.disabled) b.click(); })()`)
+    await sleep(900)
+    const cancelJournal = await (await fetch(`http://127.0.0.1:${shellPort}/api/control/calls`)).json()
+    const cancelCalled = cancelJournal.calls.some(c => c.method === 'cancel_update')
+    const cancelProblems = []
+    if (!cancelState.buttonExists) cancelProblems.push('no cancel control on the update page')
+    if (cancelState.buttonHidden) cancelProblems.push('cancel control hidden while an update runs')
+    if (cancelState.progressVisible === false) cancelProblems.push('progress card hidden while an update runs')
+    if (!cancelCalled) cancelProblems.push('cancel_update was never called by the cancel control')
+    report.failures.push(...cancelProblems)
+    report.scenarios.push({ name: 'update-cancel-control', measured: { ...cancelState, cancelCalled },
+      screenshot: await shot('12-update-cancel'), problems: cancelProblems })
+    await control('update_idle=1')
+
+    // First-run onboarding: shown when the instance is not onboarded, steps
+    // forward, and completing it persists the flag.
+    await control('onboarding=0&reset_calls=1')
+    await load()
+    const onbStart = await cdp.eval(`(() => {
+      const box = document.getElementById('onboarding');
+      const active = document.querySelector('.onb-step.active');
+      return { visible: box ? !box.classList.contains('hidden') : null,
+               step: active ? Number(active.dataset.step) : -1,
+               next: (document.getElementById('onb-next') || {}).textContent || '' };
+    })()`)
+    await cdp.eval(`document.getElementById('onb-next').click()`)
+    await sleep(400)
+    await cdp.eval(`document.getElementById('onb-next').click()`)
+    await sleep(400)
+    const onbMid = await cdp.eval(`(() => {
+      const active = document.querySelector('.onb-step.active');
+      return { step: active ? Number(active.dataset.step) : -1 };
+    })()`)
+    await cdp.eval(`document.getElementById('onb-skip').click()`)
+    await sleep(700)
+    const onbEnd = await cdp.eval(`(() => {
+      const box = document.getElementById('onboarding');
+      return { hidden: box ? box.classList.contains('hidden') : null };
+    })()`)
+    const onbJournal = await (await fetch(`http://127.0.0.1:${shellPort}/api/control/calls`)).json()
+    const onbProblems = []
+    if (onbStart.visible !== true) onbProblems.push('onboarding overlay not shown on a fresh instance')
+    if (onbStart.step !== 0) onbProblems.push(`onboarding did not start at step 0 (${onbStart.step})`)
+    if (!(onbMid.step > onbStart.step)) onbProblems.push(`next did not advance the step (${onbMid.step})`)
+    if (onbEnd.hidden !== true) onbProblems.push('onboarding overlay not dismissed')
+    if (!onbJournal.calls.some(c => c.method === 'set_onboarding_done')) {
+      onbProblems.push('finishing onboarding did not persist via set_onboarding_done')
+    }
+    report.failures.push(...onbProblems)
+    report.scenarios.push({ name: 'onboarding-flow', measured: { onbStart, onbMid, onbEnd },
+      screenshot: await shot('13-onboarding'), problems: onbProblems })
+
+    // Language switch: picking English must translate the shell and persist.
+    await control('onboarding=1&ui_lang=zh&reset_calls=1')
+    await load()
+    const beforeLang = await cdp.eval(`document.querySelector('.nav-item[data-page="plugins"]').textContent.trim()`)
+    await cdp.eval(`(() => {
+      const sel = document.getElementById('lang-select');
+      sel.value = 'en';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`)
+    await sleep(900)
+    const afterLang = await cdp.eval(`document.querySelector('.nav-item[data-page="plugins"]').textContent.trim()`)
+    const langDiag = await cdp.eval(`({
+      applyI18n: typeof applyI18n,
+      t: typeof window.t,
+      lang: window.__i18nLang,
+      prevLang: window.__i18nPrevLang,
+      zhKeys: Object.keys(window.__i18nKeys && window.__i18nKeys.zh || {}).slice(0, 4),
+      hasPluginsKey: !!(window.__i18nKeys && window.__i18nKeys.zh && window.__i18nKeys.zh['插件']),
+      selectValue: (document.getElementById('lang-select') || {}).value,
+      i18nScriptLoaded: Array.from(document.scripts).map(s => s.src.split('/').pop()),
+    })`)
+    const langJournal = await (await fetch(`http://127.0.0.1:${shellPort}/api/control/calls`)).json()
+    const langProblems = []
+    if (beforeLang === afterLang) langProblems.push(`nav label unchanged after switching to English: ${afterLang}`)
+    if (!afterLang.match(/Plugins/i)) langProblems.push(`nav label not translated: ${afterLang}`)
+    if (!langJournal.calls.some(c => c.method === 'set_ui_state'
+        && (c.payload || {}).lang === 'en')) {
+      langProblems.push('language choice was not persisted (set_ui_state lang=en)')
+    }
+    report.failures.push(...langProblems)
+    report.scenarios.push({ name: 'language-switch', measured: { beforeLang, afterLang, langDiag },
+      screenshot: await shot('14-language'), problems: langProblems })
+    await cdp.eval(`(() => {
+      const sel = document.getElementById('lang-select');
+      sel.value = 'zh';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`)
+    await sleep(600)
+    await control('ui_lang=zh')
   }
 
   report.ok = report.failures.length === 0 && report.consoleErrors.length === 0

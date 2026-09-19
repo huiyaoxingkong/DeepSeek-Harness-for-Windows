@@ -858,7 +858,10 @@ $("btn-refresh-store").addEventListener("click", refreshPlugins);
 $("btn-add-store").addEventListener("click", async () => {
   const name = $("store-name").value.trim();
   const spec = $("store-spec").value.trim();
-  const catalog = $("store-catalog").value.trim();
+  // 注意：目录地址输入框的 id 是 store-catalog-url；store-catalog 是上方列表容器，
+  // 两者曾同名（HTML 重复 id），导致 getElementById 取到 div、.value 为 undefined，
+  // 「添加商店源」一点就抛 TypeError。
+  const catalog = $("store-catalog-url").value.trim();
   if (!name || (!spec && !catalog)) {
     showBannerEl($("plugin-banner"), "err", "请填写商店名称，并至少填写安装来源或目录地址。");
     return;
@@ -868,7 +871,7 @@ $("btn-add-store").addEventListener("click", async () => {
   if (res.ok) {
     $("store-name").value = "";
     $("store-spec").value = "";
-    $("store-catalog").value = "";
+    $("store-catalog-url").value = "";
     refreshPlugins();
   }
 });
@@ -927,6 +930,13 @@ function renderUpdate(res, silent, coreVersion) {
   $("btn-import-core").disabled = busy || !($("core-file-label").dataset.path);
   $("btn-import-core").textContent = busy ? "导入中…" : "开始导入";
   $("btn-pick-core").disabled = busy;
+  // 取消更新：核心更新会下载并重建内核（数分钟到数十分钟），必须能在进行中取消。
+  const cancelBtn = $("btn-cancel-update");
+  if (cancelBtn) {
+    cancelBtn.classList.toggle("hidden", !busy);
+    cancelBtn.disabled = !busy;
+    cancelBtn.textContent = data.cancelling ? "正在取消…" : "取消更新";
+  }
 }
 
 async function pollUpdate() {
@@ -955,6 +965,18 @@ $("btn-check").addEventListener("click", async () => {
 $("btn-update").addEventListener("click", async () => {
   if (!confirm("将下载 GitHub 上的最新源码并重新构建核心。\n构建期间请勿关闭应用。继续？")) return;
   await callApi("download_update");
+  stopUpdatePoll();
+  updatePollTimer = setInterval(pollUpdate, 1500);
+});
+
+/* 取消进行中的核心更新：内核在下载/构建的检查点响应取消并清理临时目录。 */
+$("btn-cancel-update").addEventListener("click", async () => {
+  const btn = $("btn-cancel-update");
+  btn.disabled = true;
+  btn.textContent = "正在取消…";
+  const res = await callApi("cancel_update").catch(() => ({ ok: false }));
+  showBannerEl($("update-banner"), res && res.ok === false ? "err" : "info",
+    (res && res.message) || "已请求取消，将在当前步骤结束时停止。");
   stopUpdatePoll();
   updatePollTimer = setInterval(pollUpdate, 1500);
 });
@@ -1369,28 +1391,37 @@ let currentTheme = "builtin-midnight";
 async function applyTheme(id, persist) {
   const theme = shellThemes.find(t => t.id === id) || shellThemes[0];
   let styleEl = document.getElementById("shell-theme");
-  if (theme.css) {
-    let text = theme.css;
-    if (/^(https?:)?\/\//.test(text) || text.startsWith("/")) {
+  let css = String(theme.css || "");
+  if (css) {
+    // css 可以是样式表地址，也可以是直接给出的 CSS 文本（外壳插件常用后者）。
+    // 判断依据是“有没有规则块”，而不是 URL 前缀：内置外观用的是相对路径
+    // （themes/ocean.css 等），旧实现只识别 http(s):// 、// 和 / 开头的值，
+    // 于是把路径字符串当成 CSS 注入 —— 外观看起来“点了没反应”。
+    if (!/[{}]/.test(css)) {
       try {
-        const resp = await fetch(text);
-        if (resp.ok) text = await resp.text();
-        else throw new Error("HTTP " + resp.status);
+        const resp = await fetch(css, { cache: "no-store" });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        css = await resp.text();
       } catch (e) {
         console.error("[Theme] 加载失败: " + theme.css, e);
-        text = "";
+        css = "";
       }
     }
-    if (text) {
+    if (css) {
       if (!styleEl) {
         styleEl = document.createElement("style");
         styleEl.id = "shell-theme";
         document.head.appendChild(styleEl);
       }
-      styleEl.textContent = text;
+      styleEl.textContent = css;
+    } else if (styleEl) {
+      // 加载失败时移除旧外观，避免停留在上一个外观造成“切换无效”的错觉。
+      styleEl.remove();
+      styleEl = null;
     }
   } else if (styleEl) {
     styleEl.remove();
+    styleEl = null;
   }
   currentTheme = theme.id;
   if (persist !== false) {

@@ -25,6 +25,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -754,6 +755,98 @@ def test_post_update_bat_refreshes_any_stale_ui() -> None:
           'rename "%~dp0ui" "ui-backup"' in text)
 
 
+# ------------------------------------------------- shell UI static guards
+
+
+def _ui_file(name: str) -> str:
+    with open(os.path.join(REPO, "app", "ui", name), "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+@case
+def test_shell_ui_has_no_duplicate_ids() -> None:
+    """Duplicate ids make getElementById bind to the wrong element.
+
+    ``#store-catalog`` was both the catalog list <div> and the add-source
+    <input>: reading ``.value`` off the div threw, so 「添加商店源」 never worked.
+    """
+    html = _ui_file("index.html")
+    ids = re.findall(r'\bid="([^"]+)"', html)
+    duplicates = {name: ids.count(name) for name in set(ids) if ids.count(name) > 1}
+    check("index.html has no duplicate ids", not duplicates, json.dumps(duplicates))
+    check("the add-source catalog input has its own id",
+          'id="store-catalog-url"' in html)
+
+
+@case
+def test_theme_loader_fetches_relative_stylesheets() -> None:
+    """The theme loader must not inject a bare path as CSS.
+
+    Built-in themes are relative paths (``themes/ocean.css``); the old loader
+    only fetched ``http(s)://`` / ``//`` / ``/`` values, so it injected the path
+    string itself and no theme ever applied.
+    """
+    js = _ui_file("app.js")
+    body = js[js.find("async function applyTheme"): js.find("function renderThemeList")]
+    check("applyTheme distinguishes CSS text from a stylesheet reference",
+          "/[{}]/.test(css)" in body, body[:0] or "")
+    check("applyTheme fetches the reference", "await fetch(css" in body)
+    check("built-in themes still use relative paths",
+          '"themes/ocean.css"' in js and '"themes/light.css"' in js)
+    check("a failed load removes the stale theme",
+          "styleEl.remove()" in body)
+
+
+@case
+def test_i18n_matches_whitespace_padded_text_nodes() -> None:
+    """i18n must translate text nodes that carry indentation.
+
+    Nav labels are ``<span>◇</span>插件\\n        `` — an exact-match lookup
+    never hit the dictionary, so the language switch did nothing.
+    """
+    js = _ui_file("i18n.js")
+    check("i18n trims the node text before lookup", "raw.trim()" in js)
+    check("i18n preserves the surrounding whitespace",
+          "leading + window.t(key) + trailing" in js)
+    check("i18n keeps an exact-match fallback", "keys[trimmed] || keys[raw]" in js)
+
+
+@case
+def test_update_cancel_control_is_wired() -> None:
+    """cancel_update existed in the bridge with no control to reach it."""
+    html = _ui_file("index.html")
+    js = _ui_file("app.js")
+    check("update page has a cancel control", 'id="btn-cancel-update"' in html)
+    check("cancel control calls cancel_update", 'callApi("cancel_update")' in js)
+    check("cancel control is toggled with the busy state",
+          'cancelBtn.classList.toggle("hidden", !busy)' in js)
+
+
+@case
+def test_example_shell_plugins_are_not_shipped() -> None:
+    """Examples live in examples/shell-plugins and must never be packaged."""
+    check("app/ui/plugins is gone (nothing bundled)",
+          not os.path.isdir(os.path.join(REPO, "app", "ui", "plugins")))
+    examples = os.path.join(REPO, "examples", "shell-plugins")
+    check("examples kept in the repository for reference", os.path.isdir(examples))
+    for plugin in ("example-pet", "example-status", "plugin-dev-kit"):
+        manifest = os.path.join(examples, plugin, "plugin.json")
+        check(f"{plugin} kept as a reference example", os.path.isfile(manifest))
+    build = open(os.path.join(REPO, "build.ps1"), "r", encoding="utf-8-sig").read()
+    check("build.ps1 does not copy examples into the app",
+          "examples" not in build.split("Copy-Item")[0] and "shell-plugins" not in build)
+
+
+@case
+def test_plugin_removal_validates_the_name() -> None:
+    """remove() must reject a name that is not an installed dependency."""
+    source = open(os.path.join(REPO, "app", "plugins.py"), "r", encoding="utf-8").read()
+    body = source[source.find("    def remove(self"): source.find("    def set_enabled")]
+    check("remove() reads the profile manifest", "_read_manifest()" in body)
+    check("remove() rejects a missing manifest", "profile 尚未初始化" in body)
+    check("remove() rejects an unknown dependency", "不是已安装的插件" in body)
+
+
 # ---------------------------------------------------------------------- main
 
 
@@ -785,6 +878,12 @@ def main() -> int:
         test_shell_ui_sync_handles_missing_and_dev_layouts,
         test_shell_ui_sync_never_downgrades,
         test_console_output_decoding_never_crashes,
+        test_shell_ui_has_no_duplicate_ids,
+        test_theme_loader_fetches_relative_stylesheets,
+        test_i18n_matches_whitespace_padded_text_nodes,
+        test_update_cancel_control_is_wired,
+        test_example_shell_plugins_are_not_shipped,
+        test_plugin_removal_validates_the_name,
         test_discovers_core_web_url_with_token,
         test_post_update_bat_refreshes_any_stale_ui,
     ]

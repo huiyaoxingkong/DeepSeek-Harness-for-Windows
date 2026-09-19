@@ -26,6 +26,24 @@ v1.0.5 是**缺陷修复版**，解决三件事：
 
 ## 二、缺陷与修复
 
+### 0. 1.0.3 起「看起来有、实际没生效」的功能（本版逐一修好）
+
+| 功能 | 症状 | 根因 | 修复后实测 |
+| --- | --- | --- | --- |
+| **外观（主题）系统** | 设置页有 5 个外观可选，点任何一个都没反应 | 内置外观用的是相对路径（`themes/ocean.css`），而 `applyTheme` 只对 `http(s)://`、`//`、`/` 开头的值发起请求，于是把**路径字符串本身**当成 CSS 注入 | 点击「浅色」→ 注入 1361 字符真实 CSS，背景 `rgb(14,17,22)` → `rgb(244,246,250)`，选中态正确 |
+| **界面语言切换（中/英）** | 选 English 后界面仍是中文 | `applyI18n` 用文本节点**整串**精确匹配字典键，而导航文本节点带缩进换行（`<span>◇</span>插件\n        `），永远匹配不上 | 选 English → 导航「◇插件」→「◇Plugins」，并写入 `ui_state.lang` |
+| **添加商店源** | 点击即报错，永远添加不上 | `#store-catalog` 同时是目录列表 `<div>` 与目录地址 `<input>`（HTML 重复 id），`getElementById` 取到 div、`.value` 为 `undefined` → `TypeError` | 输入框独立为 `store-catalog-url`，点击后正常调用 `store_add`（点击穿透审计实测 `store_add` 已触发） |
+| **取消核心更新** | 长更新（下载 + 重建内核，数分钟到数十分钟）无法中止 | `cancel_update` 与 `CoreUpdater.cancel()` 早已实现，但界面上没有任何入口 | 更新页进度卡片新增「取消更新」按钮，仅更新中显示；实测点击后调用 `cancel_update` |
+
+附带修复：**卸载插件先校验**——`remove_plugin` 之前对任何名字都回「操作已开始」，再异步失败；
+现在与「停用」一致，先校验是否为已安装依赖并给出明确提示。
+
+### 0.1 随包内容调整
+
+**示例外壳插件不再随任何安装包分发**：`example-status`、`example-pet`、`plugin-dev-kit`
+移到仓库 `examples/shell-plugins/`（附 README 说明如何作为用户插件导入试用），
+`app/ui/plugins/` 不再随包——安装后「外壳插件」列表为空，产品里不再出现示例/开发用插件。
+
 ### 1. 退出全屏后工作台 iframe 塌陷（只显示一条边）
 
 **现象**：启动服务器后外壳自动进入全屏（沉浸模式）；点「⇤ 退出全屏」后，工作台只剩
@@ -141,8 +159,10 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 
 | 测试 | 内容 | 结果 |
 | --- | --- | --- |
-| `tools/test-1.0.5.py` | 98 项：超 MAX_PATH 删除、只读文件、junction 不跟随、入口解析 5 种布局、启动梯度、内核打印地址（token/裸地址/无输出）、usage 错误识别、控制台输出解码、健康检查容忍度、换核 / 回滚 / 陈旧备份、外壳 UI 同步（含不降级）、CSS 不变式、`post-update.bat` 规则 | **98/98 通过** |
-| `tools/immersive-check/` | Edge 153（与随应用 WebView2 同内核）无头驱动真实点击：8 个场景的真实渲染几何 + 截图 + 控制台错误；另可把**真实内核**放进 iframe 校验页面真实挂载 | **8/8 通过**（修复前 6 个场景失败）；真实内核场景通过 |
+| `tools/test-1.0.5.py` | **119 项**：超 MAX_PATH 删除、只读文件、junction 不跟随、入口解析 5 种布局、启动梯度、内核打印地址（token/裸地址/无输出）、usage 错误识别、控制台输出解码、健康检查容忍度、换核 / 回滚 / 陈旧备份、外壳 UI 同步（含不降级）、CSS 不变式、**重复 id / 主题加载 / i18n 空白匹配 / 取消更新控件 / 示例插件不随包 / 卸载校验** | **119/119 通过** |
+| `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 | **ALL CHECKS PASS** |
+| `tools/audit-backend.py` | **49 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法，校验返回结构与持久化（含 API Key 的 DPAPI 加密往返） | **49/49 通过** |
+| `tools/immersive-check/` | Edge 153（与随应用 WebView2 同内核）无头驱动真实点击：8 个布局场景 + 真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透（核对「按钮 → 桥方法」）+ 取消更新 + 新手引导 + 语言切换，共 **13 个场景** | **13/13 通过**（修复前 6 个场景失败） |
 | `tools/core-update-test/run_core_update.py` | 用启动器自身的更新管线，在 `dist\DeepSeek Harness` 开发实例里真实下载 → 构建 → 换核 → 健康检查 → 启动校验 | 升级 / 降级 / 再升级 **全部通过** |
 | `tools/core-update-test/test_launch_ladder.py` | 真实 dsh CLI：故意把坏参数放在候选梯度最前面，验证自动降级并记住可用组合 | **10/10 通过**（0.1.1-rc.2 与 0.1.6-alpha.2 各一轮） |
 | `tools/core-update-test/test_plugin_on_core.py` | 用启动器自身的插件管理在真实实例上安装 / 列出 / 卸载随包 dshmarket | **8/8 通过**（两个内核各一轮） |
@@ -162,6 +182,10 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 | 模块 | 变更 |
 | --- | --- |
 | 随包内核 | `core\` 更新为上游最新版 **dsh 0.1.6-alpha.2**（tag `dsh-v0.1.6-alpha.2`，commit `ddefc45`，2026-09-17）：重新构建（`pnpm install` + `pnpm build`）、重定位 3438 个 pnpm workspace junction、写入 `.dsh-desktop-info.json` / `.upstream-commit` 标记 |
+| 外观/语言 | `app/ui/app.js`：`applyTheme` 按“是否含规则块”区分 CSS 文本与样式表地址，失败时移除旧外观；`app/ui/i18n.js`：文本节点按去空白后的内容查表并保留原空白 |
+| 商店/插件 | `app/ui/index.html`：目录地址输入框改用唯一 id `store-catalog-url`（消除重复 id）；`app/plugins.py`：`remove()` 先校验是否已安装 |
+| 核心更新 | `app/ui/index.html` + `app/ui/app.js`：新增「取消更新」按钮（仅更新中显示）并接入 `cancel_update` |
+| 示例插件 | `app/ui/plugins/*` → `examples/shell-plugins/*`（含 README），不再随包分发；新增回归检查确保不会再被误打包 |
 | 外壳 UI | `app/ui/style.css`：iframe / `.frame-empty` 绝对定位铺满；沉浸模式保持 `position: relative`；去除双滚动条。`app/ui/app.js`：启动服务器后使用内核打印的地址（含 token） |
 | 内核管理 | `app/homes.py` 新增 `remove_tree()`（`\\?\` 长路径、只读、junction 安全）、`long_path()`、`console_text_kwargs()`、`version_newer()`；`app/updater.py` 换核前校验、失败回滚、成功校验、陈旧备份不阻塞、`cleanup_stale_core_backups()`；启动时后台清理 |
 | 内核适配 | `app/core_api.py`：`resolve_cli_entry()`、入口/版本解析回退链、7 级启动候选梯度、按次日志判定、日志句柄回收、**内核打印地址（token）发现**；`app/homes.py` 健康检查多形态容忍 |

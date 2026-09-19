@@ -191,6 +191,15 @@ class PluginManager:
         name = (name or "").strip()
         if not name:
             return False, "请输入要卸载的插件名。"
+        # Reject an unknown name up front: forwarding it to pnpm only fails
+        # asynchronously, so the UI showed "操作已开始" for a plugin that was
+        # never installed. set_enabled() validates the same way.
+        manifest = self._read_manifest()
+        if manifest is None:
+            return False, "profile 尚未初始化，没有可卸载的插件"
+        deps = manifest.get("dependencies") or {}
+        if name not in deps:
+            return False, f"{name} 不是已安装的插件（profile 依赖中不存在）"
         return self._run(["remove", name], "removing")
 
     def set_enabled(self, name: str, enabled: bool) -> tuple[bool, str]:

@@ -42,6 +42,7 @@ const I18N_DICT = {
     "plugins.preset": "常用预设：",
     "plugins.presetWebAll": "dsh-web 全家桶（19 插件聚合包）",
     "update.tagBtn": "更新到所选版本",
+    "update.cancel": "取消更新",
     "update.refreshList": "刷新列表",
     "logs.filter": "过滤关键词…",
     "instances.title": "本机实例",
@@ -85,6 +86,7 @@ const I18N_DICT = {
     "plugins.preset": "Presets: ",
     "plugins.presetWebAll": "dsh-web all-in-one (19-plugin bundle)",
     "update.tagBtn": "Update to Selected Version",
+    "update.cancel": "Cancel Update",
     "update.refreshList": "Refresh List",
     "logs.filter": "Filter keywords…",
     "instances.title": "Local Instances",
@@ -113,8 +115,18 @@ function applyI18n() {
   while (walker.nextNode()) textNodes.push(walker.currentNode);
   textNodes.forEach(node => {
     const raw = node.textContent || "";
-    const key = keys[raw];
-    if (key) node.textContent = window.t(key);
+    // 文本节点通常带缩进/换行（例如 <span>◇</span>插件\n        ）；旧实现用
+    // 整串精确匹配字典键，于是「插件\n        」永远匹配不上「插件」——
+    // 语言切换看起来完全没反应。这里按去空白后的文本查表，替换时保留原有
+    // 前后空白，避免破坏布局。
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const key = keys[trimmed] || keys[raw];
+    if (!key) return;
+    const start = raw.indexOf(trimmed);
+    const leading = raw.slice(0, start);
+    const trailing = raw.slice(start + trimmed.length);
+    node.textContent = leading + window.t(key) + trailing;
   });
   document.querySelectorAll("input[placeholder], textarea[placeholder]").forEach(el => {
     const key = keys[el.getAttribute("placeholder") || ""];
