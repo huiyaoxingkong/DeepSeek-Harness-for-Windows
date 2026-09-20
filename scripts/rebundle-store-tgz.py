@@ -6,7 +6,13 @@ runtime deps (js-yaml -> argparse, undici) from the registry, embeds them
 under ``package/node_modules`` and writes ``bundleDependencies`` so the app's
 ``pnpm add <tarball>`` preseed works with zero registry traffic.
 
-Usage: python scripts\\rebundle-store-tgz.py [--version 1.33.0]
+The version defaults to whatever ``app/settings.py`` pins as the builtin store
+spec, so the packaged store plugin can never drift from the config again (the
+old hard-coded 1.33.0 default silently re-shipped the retired, kernel-
+incompatible build after the 1.50.0 upgrade). Superseded tarballs are deleted
+for the same reason.
+
+Usage: python scripts\\rebundle-store-tgz.py [--version 1.50.0]
 """
 import argparse
 import io
@@ -19,6 +25,22 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UA = {"User-Agent": "dsh-build"}
+TGZ_RE = re.compile(r"^dshmarket-(\d+(?:\.\d+)+)\.tgz$", re.IGNORECASE)
+
+
+def bundled_version() -> str:
+    """The dshmarket version the launcher's builtin store source points at."""
+    sys.path.insert(0, os.path.join(ROOT, "app"))
+    import settings  # noqa: PLC0415 - app/ only exists at build time
+
+    for source in settings.Settings.DEFAULTS.get("store_sources", []):
+        if str(source.get("name")) != "dshmarket":
+            continue
+        match = TGZ_RE.match(os.path.basename(str(source.get("spec") or "")))
+        if match:
+            return match.group(1)
+    raise RuntimeError("app/settings.py has no dshmarket store spec to derive "
+                       "the bundled store version from")
 
 
 def fetch(url: str):
@@ -54,13 +76,16 @@ def resolve(name: str, spec: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--version", default="1.33.0")
+    parser.add_argument("--version", default="",
+                        help="defaults to the version pinned in app/settings.py")
     args = parser.parse_args()
-    version = args.version
+    version = args.version or bundled_version()
 
-    out_path = os.path.join(ROOT, "app", "store", f"dshmarket-{version}.tgz")
+    store_dir = os.path.join(ROOT, "app", "store")
+    out_path = os.path.join(store_dir, f"dshmarket-{version}.tgz")
     if os.path.isfile(out_path):
         print(f"{out_path} already exists, skipping.")
+        _drop_superseded(store_dir, os.path.basename(out_path))
         return 0
 
     print(f"fetching dshmarket@{version} ...")
@@ -110,7 +135,19 @@ def main() -> int:
             info.mtime = pkg_info.mtime
             out.addfile(info, io.BytesIO(data))
     print(f"written: {out_path} ({os.path.getsize(out_path) / 1e6:.1f} MB)")
+    _drop_superseded(store_dir, os.path.basename(out_path))
     return 0
+
+
+def _drop_superseded(store_dir: str, keep: str) -> None:
+    """Delete other bundled store tarballs — only one may ship."""
+    for name in sorted(os.listdir(store_dir)):
+        if name != keep and TGZ_RE.match(name):
+            try:
+                os.remove(os.path.join(store_dir, name))
+                print(f"  removed superseded {name}")
+            except OSError as exc:
+                print(f"  could not remove {name}: {exc}")
 
 
 if __name__ == "__main__":

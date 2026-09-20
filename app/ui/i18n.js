@@ -1,4 +1,4 @@
-﻿/* 外壳 UI 多语言（E2）：中 / 英。
+/* 外壳 UI 多语言（E2）：中 / 英。
    零标记方案：以中文原文为键的反向映射，DOMContentLoaded 时遍历静态文本节点
    与 placeholder 替换为当前语言；动态字符串在 app.js 中用 t() 包裹。 */
 "use strict";
@@ -40,7 +40,7 @@ const I18N_DICT = {
     "btn.install": "安装",
     "btn.pickPlugin": "选择插件包…",
     "plugins.preset": "常用预设：",
-    "plugins.presetWebAll": "dsh-web 全家桶（19 插件聚合包）",
+    "plugins.presetWebAll": "dsh-web 全家桶（聚合包 0.3.23）",
     "update.tagBtn": "更新到所选版本",
     "update.cancel": "取消更新",
     "settings.closeConfirm": "关闭窗口时先弹出确认界面（可取消，或改为最小化到托盘）",
@@ -88,7 +88,7 @@ const I18N_DICT = {
     "btn.install": "Install",
     "btn.pickPlugin": "Choose plugin package…",
     "plugins.preset": "Presets: ",
-    "plugins.presetWebAll": "dsh-web all-in-one (19-plugin bundle)",
+    "plugins.presetWebAll": "dsh-web all-in-one (bundle 0.3.23)",
     "update.tagBtn": "Update to Selected Version",
     "update.cancel": "Cancel Update",
     "settings.closeConfirm": "Ask for confirmation before closing the window (cancel, or minimize to tray)",

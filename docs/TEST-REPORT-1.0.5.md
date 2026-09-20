@@ -77,7 +77,7 @@ node tools\immersive-check\cdp_probe.mjs --shell-port <shell> --core-port <core>
 `tools\test-1.0.5.py`（自包含，仅标准库）：
 
 ```
-1.0.5 regression tests: 98/98 passed
+1.0.5 regression tests: 228/228 passed
 ALL PASS
 ```
 
@@ -102,7 +102,17 @@ ALL PASS
 - `shellui.sync_shell_ui()`（陈旧 UI 刷新 + 备份 + 二次运行无操作 + 缺失/开发布局 +
   绝不把比随包更新版本的在装 UI 降级）；
 - `post-update.bat` 规则（不再只看标记是否存在）；
-- 外壳 CSS 不变式（`.frame` 绝对定位四边、沉浸模式不得 `position: static`）。
+- 外壳 CSS 不变式（`.frame` 绝对定位四边、沉浸模式不得 `position: static`）；
+- 重复 id / 主题加载（相对路径样式表）/ i18n 空白匹配 / 取消更新控件 / 示例插件不随包 /
+  卸载校验；
+- **旧插件迁移**（`migrate.migrate_profile`）：5 个旧包从 `dependencies` 与
+  `dsh.profile.bundles` 移除、商店依赖重指向随包 tgz、无 profile / 清单损坏 / 已迁移三态、
+  清理改由 `pnpm install`（不可冻结 lockfile、清空 CI、`PNPM_HOME`/`DSH_HOME` 正确）、
+  失败时仍保证清单已清理、内核自身 bundle 不被误删；
+- 迁移接线：`main.py::_heal_profile` 在 `_heal_done.set()` 之前调用、`post-update.bat`
+  的移除命令与 profile 缺失保护、且先于冒烟测试的提前退出；
+- 预设与随包商店：预设不含任何已下线的包、含作者当前包、聚合按钮固定 `0.3.23`；
+  `app/store` 只保留一个 `dshmarket` tgz、文件名与包内版本一致、peer 兼容当前 dsh-settings 线。
 
 ---
 
@@ -195,7 +205,48 @@ profile store 自愈）在真实实例上安装 / 列出 / 卸载随包 dshmarke
 > 说明：dsh ≥ 0.1.6 的 token 地址会先 303 跳转再用 Cookie 建立会话，因此测试助手
 > 使用带 Cookie 的请求（与浏览器/WebView 行为一致）；不带 Cookie 直接请求会得到 401。
 
-## 七、结论与遗留
+## 七、旧版 dsh-web 插件迁移与替换包实测（真实内核，本轮）
+
+**方法**：`tools/core-update-test/test_plugin_migration_on_core.py` —— 用 1.0.5 安装包自身的
+dsh **0.1.6-alpha.2** 内核，在一次性的实例目录里复现「已升级安装」的状态：
+
+- 配置里仍是旧商店源 `store/dshmarket-1.33.0.tgz`；
+- profile 由 dsh CLI 正常创建（含内核自身 bundle `@deepseek-ai/dsh-base` /
+  `@deepseek-ai/dsh-web-app`），再装入 3 个已下线的 dsh-web 包
+  （`dsh-chat-recovery` / `dsh-desktop-launcher` / `dsh-perf`）与旧 dshmarket 1.33.0。
+
+实测 **32/32 通过**：
+
+| 阶段 | 结果 |
+| --- | --- |
+| 商店源自愈 | `store/dshmarket-1.33.0.tgz` → `store/dshmarket-1.50.0.tgz`，并写回 `config.json` |
+| 迁移前启动 | 内核启动、token 地址 **HTTP 200**、裸地址 401（旧包 + 旧商店共存的状态仍可服务） |
+| 迁移 | `removed` / `bundlesDropped` = 3 个旧包；`dshmarket` 依赖改指随包 1.50.0 tgz；`pruned: true`（pnpm 对账后 `node_modules` 中的旧包已删除）；内核自身 bundle 未被误删 |
+| 幂等 | 再次执行 → `up-to-date`，不做任何改动 |
+| 替换包 | 通过启动器自身的插件路径安装 `@linxin666/dsh-web-all@0.3.23` 成功（+206 个包） |
+| 迁移后启动 | 内核启动、token 地址 **HTTP 200**；日志中不含任何已下线包名；替代包无错误行 |
+
+补充证据（迁移前的完整旧集合，含废弃聚合包）：
+
+- 安装 `@linxin666/dsh-web-ui-all@0.3.6` 时 pnpm 打印
+  `[WARN] deprecated @linxin666/dsh-web-ui-all@0.3.6: 迁移到 @linxin666/dsh-web-all；详见该版本 Release notes`；
+- 该包 `package.json` 内含作者的迁移指令 `dsh.migrate = {to: "@linxin666/dsh-web-all", since: "0.3.6"}`，
+  迁移器会把它记录到日志（只记录、**不自动安装**）；
+- 完整旧集合（225 个包）在极慢的网络下需 30 分钟以上，因此正式回归只装入 3 个无依赖/单依赖的
+  已下线包；全 5 个包名的处理由 `tools/test-1.0.5.py` 的离线用例覆盖。
+
+本轮由该实测发现并修复的两个真机缺陷：
+
+1. **清理不能用 `dsh plugin remove`**：清单已被清单优先地改掉，pnpm 会以
+   `ERR_PNPM_CANNOT_REMOVE_MISSING_DEPS` 拒绝，prune 永远不会执行 → 改为 `pnpm install`
+   对账（`--no-frozen-lockfile --ignore-scripts`，并清空 `CI` 以免启用冻结 lockfile）。
+2. **不能用管道捕获 pnpm 输出**：Windows 上超时杀掉 `pnpm.cmd` 后，node 子进程仍持有管道
+   写端，`subprocess.run(capture_output=True)` 会永久阻塞在 `communicate()`（实测卡死
+   30 分钟以上），`_heal_done` 永不置位 → **所有插件操作被阻塞**。现改为把 pnpm 输出写入
+   `profiles/web/.plugin-manager/logs/profile-migration-pnpm.log`，超时用
+   `taskkill /F /T` 杀进程树，并把上限收敛到 600s。
+
+## 八、结论与遗留
 
 - 三类缺陷（全屏塌陷、换核失败、界面不刷新）与两项内核适配缺陷（最新内核 401 鉴权地址、
   非英文 Windows 子进程解码崩溃）均已修复，并有可复现的量化证据；

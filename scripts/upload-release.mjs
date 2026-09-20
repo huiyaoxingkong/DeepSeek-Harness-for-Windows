@@ -8,8 +8,10 @@
  * script performs the same steps with the same inputs:
  *
  *   1. commit + tag + push the source (skippable with --skip-push)
- *   2. create (or reuse) the GitHub Release for the tag
- *   3. upload the Setup/Update exes and the SHA256 files
+ *   2. create (or reuse) the GitHub Release for the tag, refreshing its body
+ *      from RELEASE_NOTES.md when the release already exists
+ *   3. upload the Setup/Update exes and the SHA256 files, replacing any asset
+ *      with the same name
  *
  * Auth, in order: `--token`, `$GITHUB_TOKEN`, `$GH_TOKEN`, then git's own
  * credential helper (`git credential fill`) — the same credential `git push`
@@ -18,6 +20,7 @@
  * Usage:
  *   node scripts/upload-release.mjs --version 1.0.5
  *   node scripts/upload-release.mjs --version 1.0.5 --skip-push
+ *   node scripts/upload-release.mjs --version 1.0.5 --force-tag   # move an existing tag to HEAD
  *   node scripts/upload-release.mjs --version 1.0.5 --dry-run
  */
 
@@ -46,6 +49,11 @@ const version = args.get('version') || '1.0.5'
 const tag = args.get('tag') || `v${version}`
 const skipPush = args.has('skip-push')
 const dryRun = args.has('dry-run')
+// Re-issuing the same version (bug-fix re-upload): move the tag to HEAD and
+// rewrite the release body. Off by default so a normal release never moves a
+// published tag by accident.
+const forceTag = args.has('force-tag')
+const updateBody = !args.has('no-update-body')
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -187,8 +195,11 @@ async function main() {
       log('  working tree clean; nothing to commit')
     }
     const existingTag = git(['tag', '--list', tag])
-    if (existingTag) {
-      log(`  tag ${tag} already exists`)
+    if (existingTag && forceTag) {
+      log(`  tag ${tag} exists; moving it to HEAD (--force-tag)`)
+      git(['tag', '-af', tag, '-m', `DeepSeek Harness for Windows ${version}`])
+    } else if (existingTag) {
+      log(`  tag ${tag} already exists (pass --force-tag to move it to HEAD)`)
     } else {
       git(['tag', '-a', tag, '-m', `DeepSeek Harness for Windows ${version}`])
     }
@@ -196,8 +207,9 @@ async function main() {
       log('  [dry-run] skipping push')
     } else {
       git(['push', 'origin', 'HEAD'], { stdio: ['ignore', 'inherit', 'inherit'] })
-      git(['push', 'origin', tag], { stdio: ['ignore', 'inherit', 'inherit'] })
-      log(`  pushed branch and tag ${tag}`)
+      git(['push', ...(forceTag ? ['--force'] : []), 'origin', tag],
+          { stdio: ['ignore', 'inherit', 'inherit'] })
+      log(`  pushed branch and tag ${tag}${forceTag ? ' (forced)' : ''}`)
     }
   } else {
     log('=== 1. source: skipped (--skip-push) ===')
@@ -214,6 +226,17 @@ async function main() {
   try {
     release = await api(token, 'GET', `/releases/tags/${tag}`)
     log(`  release ${tag} exists (id ${release.id})`)
+    if (updateBody) {
+      if (dryRun) {
+        log('  [dry-run] would refresh the release body from RELEASE_NOTES.md')
+      } else {
+        release = await api(token, 'PATCH', `/releases/${release.id}`, {
+          name: `DeepSeek Harness for Windows ${version}`,
+          body,
+        })
+        log('  release body refreshed from RELEASE_NOTES.md')
+      }
+    }
   } catch (error) {
     if (error.status !== 404) throw error
   }

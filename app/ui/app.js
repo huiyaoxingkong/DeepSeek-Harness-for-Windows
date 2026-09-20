@@ -346,30 +346,35 @@ async function refreshProviders() {
 
 $("btn-refresh-providers").addEventListener("click", refreshProviders);
 
-/* C3: 一键填入 dsh-web 全家桶聚合包 */
+/* C3: 一键填入 dsh-web 全家桶聚合包（固定为已验证兼容 0.1.6 内核的版本） */
 $("preset-web-all").addEventListener("click", () => {
-  $("plugin-spec").value = "@linxin666/dsh-web-all";
+  $("plugin-spec").value = "@linxin666/dsh-web-all@0.3.23";
   $("plugin-spec").focus();
 });
 
-/* C3: 免编译预设 —— 除 dsh-ssh（需编译 cpu-features）外的全套 dsh-web 插件 */
+/* C3: 免编译预设 —— 除 dsh-ssh（需编译 cpu-features）外的全套 dsh-web 插件。
+   1.0.5 起对齐作者仓库 zhu1090093659/dsh-web 的当前包集合（各包 0.3.23，
+   声明 dsh >= 0.1.5-rc.1，兼容随包的 0.1.6-alpha.2）；旧聚合包
+   @linxin666/dsh-web-ui-all 与已下线的 chat-recovery / desktop-launcher /
+   perf / aionui-panel 不再列入，并在升级时自动从旧 profile 移除（见 migrate.py）。 */
 const PRESET_WEB_NO_SSH = [
-  "@linxin666/dsh-client-ui-aionui-panel",
-  "@linxin666/dsh-chat-recovery",
   "@linxin666/dsh-client-ui-community-plugins",
-  "@linxin666/dsh-desktop-launcher",
   "@linxin666/dsh-doctor",
   "@linxin666/dsh-client-ui-git-graph",
+  "@linxin666/dsh-i18n",
   "@linxin666/dsh-liangshen",
   "@linxin666/dsh-client-ui-market",
-  "@linxin666/dsh-perf",
+  "@linxin666/dsh-client-ui-model-capabilities",
   "@linxin666/dsh-pet",
   "@linxin666/dsh-client-ui-plugin-manager",
+  "@linxin666/dsh-client-ui-preset-center",
   "@linxin666/dsh-remote-web-ui",
+  "@linxin666/dsh-session-archive",
   "@linxin666/dsh-client-ui-session-id",
   "@linxin666/dsh-client-ui-skill-explorer",
   "@linxin666/dsh-client-ui-task-board",
   "@linxin666/dsh-tool-describe-image",
+  "@linxin666/dsh-usage",
   "@linxin666/dsh-client-ui-web-ui-settings",
   "@linxin666/dsh-client-ui-skin-center",
   "dsh-better-sidebar",

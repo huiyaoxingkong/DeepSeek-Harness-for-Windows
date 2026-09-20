@@ -1,4 +1,4 @@
-﻿# DeepSeek Harness Desktop
+# DeepSeek Harness Desktop
 
 将 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）
 封装为 Windows 桌面应用：
@@ -43,6 +43,18 @@
   不再随包，安装后「外壳插件」列表为空。
 - **卸载插件先校验**：`remove_plugin` 之前对任何名字都回「操作已开始」，再异步失败；
   现在与「停用」一致，先校验是否为已安装依赖并给出明确提示。
+- **旧版 dsh-web 聚合插件自动清理**：作者已把 `@linxin666/dsh-web-ui-all` 标记为废弃
+  （npm 弃用提示「迁移到 `@linxin666/dsh-web-all`」，包内 `dsh.migrate.to` 指向它），
+  最后一个版本 0.3.6（2026-08-27）与当前家族 0.3.23（2026-09-16）差距明显，与随包的
+  0.1.6 内核组合使用时 Web UI 出现异常（用户实测）。升级到 1.0.5 时启动器会**先清理
+  profile 清单**（`dependencies` + `dsh.profile.bundles`，离线也生效），再用 pnpm 把
+  `node_modules` 与清单对齐（多余旧包被删除、随包商店包装入）；`post-update.bat` 在升级时
+  还会用随包 dsh CLI 先卸载一次（那时清单未改，命令有效）。
+  同时下线 `dsh-chat-recovery` / `dsh-desktop-launcher` / `dsh-perf` /
+  `dsh-client-ui-aionui-panel` 四个已退出家族列表的包。预设与一键安装按钮已对齐作者的
+  当前包集合（各包 0.3.23，声明 `dsh >= 0.1.5-rc.1`），**清理不会自动安装替代包**。
+- **内置商店插件升级**：随包 `dshmarket` 由 1.33.0 升到 **1.50.0**（peer 兼容
+  `^0.1.2-alpha.2`，可在 0.1.6 内核上加载）；旧安装的商店源配置会在启动时自动指向新包。
 
 ### 三、缺陷修复
 
@@ -117,9 +129,10 @@
 
 ### 六、测试与功能实现检查
 
-- `tools/test-1.0.5.py`：**152 项**回归（长路径删除 / 只读与 junction、入口解析与降级阶梯、
+- `tools/test-1.0.5.py`：**241 项**回归（长路径删除 / 只读与 junction、入口解析与降级阶梯、
   启动地址与 token、健康检查容忍度、换核与回滚、外壳 UI 同步、控制台输出解码、CSS 不变式、
-  重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验）。
+  重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验、
+  profile 旧插件迁移与 pruned 回退、预设包集合、随包商店包版本）。
 - `tools/immersive-check/`：Edge/WebView2 同内核无头驱动 **16 个场景**（8 个布局 +
   真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透 + 取消更新 + 新手引导 + 语言切换），
   并带桥调用日志核对「按钮 → 桥方法」是否真的打通。
@@ -129,7 +142,10 @@
   校验返回结构与持久化，含 API Key 的 DPAPI 加密往返）。
 - `tools/core-update-test/`：用启动器自身的更新管线在 `dist\DeepSeek Harness` 实例上真机
   升级 0.1.1-rc.2 → 0.1.6-alpha.2、降级回 0.1.1-rc.2、再升级，全部通过；启动梯度 10/10、
-  插件路径 8/8（两个内核各一轮）。
+  插件路径 8/8（两个内核各一轮）；`test_plugin_migration_on_core.py` 在该实例的 0.1.6 内核上
+  复现「旧聚合包 + 旧商店」的升级前状态，跑完迁移后确认旧包已从清单与 `node_modules` 移除、
+  新包 `@linxin666/dsh-web-all@0.3.23` 可安装且内核仍正常提供服务（token 地址 HTTP 200、
+  裸地址 401）。
 
 ## 版本 1.0.4
 
@@ -190,7 +206,7 @@
   端口；停止服务只清理本实例进程。
 - **dsh-web 仓库插件全量兼容**（[zhu1090093659/dsh-web](https://github.com/zhu1090093659/dsh-web)）：
   统一注入 `DSH_HOME`；内置 `dsh.cmd` 命令 shim 并加入核心进程 PATH（dsh-doctor /
-  dsh-plugin-manager / dsh-desktop-launcher 等需要调用 dsh CLI 的插件可用），
+  dsh-plugin-manager 等需要调用 dsh CLI 的插件可用），
   node / pnpm 同步暴露；自动预置 profile `pnpm-workspace.yaml`
   （`nodeLinker: hoisted`、`allowBuilds`、`minimumReleaseAgeExclude`），解决聚合包
   安装、原生依赖构建与 pnpm 11 发布年龄门禁三类安装失败。
@@ -341,7 +357,7 @@ dsh-market 客户端的卡片 / 状态徽章 / 版本号设计：
     {
       "name": "dshmarket",                  // 安装包名
       "label": "dshmarket 插件商店",        // 显示名称
-      "spec": "store/dshmarket-1.21.4.tgz", // 相对应用目录的本地包路径
+      "spec": "store/dshmarket-1.50.0.tgz", // 相对应用目录的本地包路径
       "homepage": "https://github.com/dsh-market/dsh-market",  // 来源标注
       "catalog": "https://awesome-dsh-plugin.com/plugins.json", // 外壳商店目录地址
       "builtin": true

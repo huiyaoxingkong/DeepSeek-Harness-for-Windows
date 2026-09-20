@@ -85,9 +85,18 @@ def main() -> int:
     check("plugin list works on this core", isinstance(before.get("plugins"), list),
           f"{len(installed_before)} installed")
 
-    tarball = os.path.join(app_dir, "store", "dshmarket-1.33.0.tgz")
-    if not os.path.isfile(tarball):
-        check("bundled dshmarket tarball present", False, tarball)
+    # Use whatever dshmarket tarball the build ships (the version moves with
+    # each release), not a hard-coded name.
+    store_dir = os.path.join(app_dir, "store")
+    tarballs = sorted(
+        (os.path.join(store_dir, n) for n in os.listdir(store_dir)
+         if n.startswith("dshmarket-") and n.endswith(".tgz")),
+        key=lambda p: [int(x) if x.isdigit() else x for x in
+                       os.path.basename(p)[len("dshmarket-"):-4].split(".")],
+    ) if os.path.isdir(store_dir) else []
+    tarball = tarballs[-1] if tarballs else ""
+    if not tarball or not os.path.isfile(tarball):
+        check("bundled dshmarket tarball present", False, store_dir)
         return 2
     check("bundled dshmarket tarball present", True, os.path.basename(tarball))
 

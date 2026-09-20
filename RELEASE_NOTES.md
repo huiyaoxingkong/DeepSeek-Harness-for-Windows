@@ -1,4 +1,4 @@
-﻿# DeepSeek Harness for Windows v1.0.5 发布声明
+# DeepSeek Harness for Windows v1.0.5 发布声明
 
 **发布日期**：2026-09-20
 **项目主页**：https://github.com/huiyaoxingkong/DeepSeek-Harness-for-Windows
@@ -87,6 +87,39 @@ v1.0.5 是**缺陷修复版**，解决三件事：
 | 点「最小化到托盘」 | 调用 `hide_to_tray`，服务器继续运行 |
 | 点「关闭应用」 | 调用 `quit_app`；后端核对：先 `_save_state()` 再 `core.stop()`，配置确实落盘（哨兵值与端口写入后重读一致） |
 | 确认关闭后再按 X | 直接退出（不会卡在等待确认） |
+
+### 0.4 旧版 dsh-web 插件清理与内置商店升级
+
+上游已废弃旧的 `@linxin666/dsh-web-ui-all` 聚合包：npm 对此版本给出弃用提示
+（`deprecated @linxin666/dsh-web-ui-all@0.3.6: 迁移到 @linxin666/dsh-web-all`），
+包内还带有作者自己的迁移指令 `dsh.migrate = { to: "@linxin666/dsh-web-all", since: "0.3.6" }`；
+它最后发布于 **2026-08-27（0.3.6）**，而当前家族已是 **0.3.23（2026-09-16）**；
+用户实测该旧聚合包与随包的 dsh 0.1.6-alpha.2 内核组合使用时 Web UI 出现异常。
+
+1.0.5 的处理方式：**只清理、不擅自安装替代包**。
+
+| 项目 | 行为 |
+| --- | --- |
+| 清理范围 | `@linxin666/dsh-web-ui-all`、`dsh-chat-recovery`、`dsh-desktop-launcher`、`dsh-perf`、`dsh-client-ui-aionui-panel` |
+| 启动时迁移（`app/migrate.py`） | **先改 profile 清单**（`dependencies` + `dsh.profile.bundles`，离线也生效，这是真正决定内核是否加载插件的地方），随后在 profile 内执行 `pnpm install --no-frozen-lockfile --ignore-scripts` 让 `node_modules` 与清单一致（多余的旧包被删除、随包商店包被装入）；不用 `dsh plugin remove`，因为清单已改，pnpm 会以 `ERR_PNPM_CANNOT_REMOVE_MISSING_DEPS` 拒绝（真机实测） |
+| 升级时迁移（`post-update.bat`） | 同样的移除命令，profile 或 CLI 缺失时安全跳过 |
+| 商店源自愈 | 内置 `dshmarket` 依赖指向随包的最新 tgz（1.33.0 → **1.50.0**，peer 兼容 `^0.1.2-alpha.2`） |
+| 预设对齐 | 「一键填入全家桶」→ `@linxin666/dsh-web-all@0.3.23`；「免编译预设」对齐作者当前包集合（各包 0.3.23，声明 `dsh >= 0.1.5-rc.1`），不再包含已下线的包 |
+| 幂等 | 已迁移的 profile 再次启动直接跳过（`up-to-date`），不会重复执行 |
+
+真机验证（开发实例 `dist\DeepSeek Harness` 的 0.1.6-alpha.2 内核，`tools/core-update-test/test_plugin_migration_on_core.py`）：
+复现「旧聚合包 0.3.6 + dshmarket 1.33.0」的升级前状态 → 迁移后旧包从清单与
+`node_modules` 中消失、商店依赖改指 1.50.0 → 安装 `@linxin666/dsh-web-all@0.3.23` 成功，
+内核启动后 token 地址 HTTP 200、裸地址 401。
+
+### 0.5 升级脚本 `post-update.bat` 编码修复
+
+`post-update.bat` / `post-install.bat` 由 cmd.exe 按控制台代码页（简体中文为 GBK）读取，
+必须是**严格 GBK 编码 + CRLF**。本轮编辑过程中该文件被写入了 UTF-8 的替换字符
+（U+FFFD）：其双字节前导字节会吞掉行尾换行，cmd.exe 因此失去行边界，把后面的各行当成
+命令逐条执行——自动化冒烟测试实测「升级脚本整段跑飞、核心 junction 没有恢复」。
+现已从干净版本重建，并新增回归检查（无 BOM、严格 GBK 可解码、无替换字符、全 CRLF），
+`smoke-release.ps1` 会真实执行升级脚本来守住这条不变量。
 
 ### 1. 退出全屏后工作台 iframe 塌陷（只显示一条边）
 
@@ -213,13 +246,14 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 
 | 测试 | 内容 | 结果 |
 | --- | --- | --- |
-| `tools/test-1.0.5.py` | **152 项**：超 MAX_PATH 删除、只读文件、junction 不跟随、入口解析 5 种布局、启动梯度、内核打印地址（token/裸地址/无输出）、usage 错误识别、控制台输出解码、健康检查容忍度、换核 / 回滚 / 陈旧备份、外壳 UI 同步（含不降级）、CSS 不变式、**重复 id / 主题加载 / i18n 空白匹配 / 取消更新控件 / 示例插件不随包 / 卸载校验** | **152/152 通过** |
+| `tools/test-1.0.5.py` | **241 项**：超 MAX_PATH 删除、只读文件、junction 不跟随、入口解析 5 种布局、启动梯度、内核打印地址（token/裸地址/无输出）、usage 错误识别、控制台输出解码、健康检查容忍度、换核 / 回滚 / 陈旧备份、外壳 UI 同步（含不降级）、CSS 不变式、**重复 id / 主题加载 / i18n 空白匹配 / 取消更新控件 / 示例插件不随包 / 卸载校验 / 旧插件迁移（manifest + pnpm 对账）/ 预设包集合 / 随包商店包版本与再打包默认值** | **241/241 通过** |
 | `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 | **ALL CHECKS PASS** |
 | `tools/audit-backend.py` | **65 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法，校验返回结构与持久化（含 API Key 的 DPAPI 加密往返） | **65/65 通过** |
 | `tools/immersive-check/` | Edge 153（与随应用 WebView2 同内核）无头驱动真实点击：8 个布局场景 + 真实内核 iframe 挂载 + 外观切换 + 全页面/全按钮点击穿透（核对「按钮 → 桥方法」）+ 取消更新 + 新手引导 + 语言切换，共 **16 个场景** | **16/16 通过**（修复前 6 个场景失败） |
 | `tools/core-update-test/run_core_update.py` | 用启动器自身的更新管线，在 `dist\DeepSeek Harness` 开发实例里真实下载 → 构建 → 换核 → 健康检查 → 启动校验 | 升级 / 降级 / 再升级 **全部通过** |
 | `tools/core-update-test/test_launch_ladder.py` | 真实 dsh CLI：故意把坏参数放在候选梯度最前面，验证自动降级并记住可用组合 | **10/10 通过**（0.1.1-rc.2 与 0.1.6-alpha.2 各一轮） |
 | `tools/core-update-test/test_plugin_on_core.py` | 用启动器自身的插件管理在真实实例上安装 / 列出 / 卸载随包 dshmarket | **8/8 通过**（两个内核各一轮） |
+| `tools/core-update-test/test_plugin_migration_on_core.py` | 在开发实例的真实内核上复现旧插件升级前状态：商店源重指向 → 迁移（清单 + `node_modules`）→ 安装替代包 → 内核启动与 HTTP 校验 | **通过**（旧包消失、替代包安装成功、token 地址 200 / 裸地址 401） |
 
 真机内核升级 / 降级（开发实例 `dist\DeepSeek Harness`）：
 
@@ -240,6 +274,7 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 | 商店/插件 | `app/ui/index.html`：目录地址输入框改用唯一 id `store-catalog-url`（消除重复 id）；`app/plugins.py`：`remove()` 先校验是否已安装 |
 | 核心更新 | `app/ui/index.html` + `app/ui/app.js`：新增「取消更新」按钮（仅更新中显示）并接入 `cancel_update` |
 | 示例插件 | `app/ui/plugins/*` → `examples/shell-plugins/*`（含 README），不再随包分发；新增回归检查确保不会再被误打包 |
+| 插件生态迁移 | 新增 `app/migrate.py`：启动时把 5 个已废弃 / 已下线的 dsh-web 包从 profile 清单与 `dsh.profile.bundles` 移除，并调用随包 dsh CLI 执行真实卸载（批量失败逐个重试），同时把内置 `dshmarket` 依赖指向随包 tgz；`post-update.bat` 做同样清理；`app/ui/app.js` 预设与「一键全家桶」按钮对齐作者当前包集合（`@linxin666/dsh-web-all@0.3.23`）；随包商店包 `dshmarket` 1.33.0 → **1.50.0** |
 | 外壳 UI | `app/ui/style.css`：iframe / `.frame-empty` 绝对定位铺满；沉浸模式保持 `position: relative`；去除双滚动条。`app/ui/app.js`：启动服务器后使用内核打印的地址（含 token） |
 | 内核管理 | `app/homes.py` 新增 `remove_tree()`（`\\?\` 长路径、只读、junction 安全）、`long_path()`、`console_text_kwargs()`、`version_newer()`；`app/updater.py` 换核前校验、失败回滚、成功校验、陈旧备份不阻塞、`cleanup_stale_core_backups()`；启动时后台清理 |
 | 内核适配 | `app/core_api.py`：`resolve_cli_entry()`、入口/版本解析回退链、7 级启动候选梯度、按次日志判定、日志句柄回收、**内核打印地址（token）发现**；`app/homes.py` 健康检查多形态容忍 |
@@ -269,7 +304,7 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 | 组件 | 版本 | 用途 | 许可证 | 链接 |
 | --- | --- | --- | --- | --- |
 | deepseek-ai/deepseek-harness | dsh-0.1.6-alpha.2（随包，2026-09-17，commit `ddefc45`；已实测 0.1.1-rc.2 ↔ 0.1.6-alpha.2 升级/降级） | 核心服务器与 Web 界面 | Apache-2.0（遵循上游声明） | https://github.com/deepseek-ai/deepseek-harness |
-| dsh-market/dsh-market | dshmarket 1.33.0（官方 tgz 离线重打包） | 插件商店（内置预装，初始关闭，启用离线） | MIT | https://github.com/dsh-market/dsh-market |
+| dsh-market/dsh-market | dshmarket 1.50.0（官方 tgz 离线重打包） | 插件商店（内置预装，初始关闭，启用离线） | MIT | https://github.com/dsh-market/dsh-market |
 | Git for Windows | 2.55.0.5（PortableGit） | 懒人包内置 git / Git Bash | GPL-2.0 | https://github.com/git-for-windows/git |
 | pywebview | 6.2.1 | 桌面窗口（WebView2 宿主） | MIT | https://github.com/r0x0r/pywebview |
 | PyInstaller | 6.22.2 | Python 启动器打包为 exe | GPL-2.0（含引导加载器例外） | https://github.com/pyinstaller/pyinstaller |

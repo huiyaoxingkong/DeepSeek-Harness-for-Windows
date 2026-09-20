@@ -1,4 +1,4 @@
-﻿"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
+"""Regression tests for the DeepSeek Harness Desktop 1.0.5 fixes.
 
 Covers the three defect families fixed in 1.0.5:
 
@@ -982,6 +982,400 @@ def test_script_encodings_match_their_interpreters() -> None:
         except (UnicodeDecodeError, LookupError):
             decodable = False
         check(f"{name} decodes in the console code page", decodable)
+        # A UTF-8 replacement byte written into an ANSI batch file loses the
+        # line boundary for cmd.exe (a double-byte lead byte swallows the
+        # newline) and every later line is executed as garbage commands —
+        # observed in a smoke run. Batch files are also CRLF for the same
+        # reason: cmd.exe's parser is only reliable with CRLF.
+        text = raw.decode("mbcs", errors="replace") if decodable else ""
+        check(f"{name} has no mojibake/replacement characters",
+              "\ufffd" not in text)
+        try:
+            raw.decode("gbk")
+            strict = True
+        except (UnicodeDecodeError, LookupError):
+            strict = False
+        check(f"{name} is strictly GBK-decodable", strict)
+        check(f"{name} uses CRLF line endings",
+              raw.count(b"\r\n") > 0 and raw.count(b"\n") == raw.count(b"\r\n"),
+              f"CRLF={raw.count(b'\r\n')} LF={raw.count(b'\n')}")
+
+
+@case
+def test_profile_migration_drops_retired_plugins() -> None:
+    """The retired dsh-web plugins must leave an existing profile.
+
+    They declare dsh compatibility ranges that exclude the bundled 0.1.6
+    kernel, so leaving them in ``profiles/web/package.json`` keeps the whole
+    profile failing to load after an upgrade. The migration is manifest-first
+    (works with no core CLI) and also repoints the preseeded dshmarket plugin
+    at the bundled tarball.
+    """
+    import migrate  # noqa: PLC0415 - app/ is on sys.path at import time
+
+    app_dir = os.path.join(REPO, "app")
+    tgz, version = migrate.bundled_store(app_dir)
+    check("a bundled dshmarket tarball is present", bool(tgz), tgz)
+    check("the bundled store version is newer than the retired 1.33.0",
+          bool(version) and homes.version_newer(version, "1.33.0"), version)
+
+    scratch = tempfile.mkdtemp(prefix="dsh-migrate-")
+    try:
+        profile = os.path.join(scratch, "profiles", "web")
+        os.makedirs(profile)
+
+        # ---- a profile carrying every retired plugin -------------------
+        manifest = {
+            "dependencies": {
+                "dshmarket": "file:" + os.path.join(scratch, "store", "dshmarket-1.33.0.tgz"),
+                "@linxin666/dsh-web-ui-all": "^0.3.11",
+                "@linxin666/dsh-chat-recovery": "^0.3.11",
+                "@linxin666/dsh-client-ui-preset-center": "^0.3.23",
+                "dsh-better-sidebar": "^1.2.0",
+            },
+            "dsh": {"profile": {"bundles": [
+                "@deepseek-ai/dsh-base",
+                "@deepseek-ai/dsh-web-app",
+                "@linxin666/dsh-web-ui-all",
+                "@linxin666/dsh-perf",
+                "@linxin666/dsh-client-ui-preset-center",
+            ]}},
+        }
+        with open(os.path.join(profile, "package.json"), "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+
+        res = migrate.migrate_profile(app_dir, "", "", scratch)
+        check("migration reports success", res["ok"], json.dumps(res)[:200])
+        check("retired plugins are removed from dependencies",
+              set(res["removed"]) == {"@linxin666/dsh-web-ui-all",
+                                      "@linxin666/dsh-chat-recovery"},
+              json.dumps(res["removed"]))
+        with open(os.path.join(profile, "package.json"), "r", encoding="utf-8") as fh:
+            after = json.load(fh)
+        deps = after["dependencies"]
+        for name in migrate.OBSOLETE_PLUGINS:
+            check(f"{name} no longer a dependency", name not in deps)
+        check("the compatible replacement is untouched",
+              deps.get("@linxin666/dsh-client-ui-preset-center") == "^0.3.23")
+        check("non-dsh-web plugins are untouched", deps.get("dsh-better-sidebar") == "^1.2.0")
+        bundles = after["dsh"]["profile"]["bundles"]
+        check("retired plugins are dropped from dsh.profile.bundles",
+              "@linxin666/dsh-web-ui-all" not in bundles
+              and "@linxin666/dsh-perf" not in bundles, json.dumps(bundles))
+        check("surviving bundles are kept",
+              "@linxin666/dsh-client-ui-preset-center" in bundles)
+        check("the core's own bundles are never touched by the migration",
+              "@deepseek-ai/dsh-base" in bundles and "@deepseek-ai/dsh-web-app" in bundles,
+              json.dumps(bundles))
+        check("dshmarket is repointed at the bundled tarball",
+              os.path.normcase(deps["dshmarket"]) == os.path.normcase("file:" + tgz),
+              deps["dshmarket"])
+        check("without a core CLI the migration stops after the manifest edit",
+              res["skipped"] == "no-core-cli", res["skipped"])
+
+        # ---- running again is a no-op ----------------------------------
+        res2 = migrate.migrate_profile(app_dir, "", "", scratch)
+        check("a migrated profile is skipped", res2["skipped"] == "up-to-date",
+              res2["skipped"])
+        check("a migrated profile reports nothing left to do",
+              not res2["removed"] and not res2["bundlesDropped"] and not res2["storeFrom"],
+              json.dumps(res2)[:200])
+
+        # ---- a missing profile is not an error -------------------------
+        res3 = migrate.migrate_profile(app_dir, "", "", os.path.join(scratch, "nope"))
+        check("a missing profile is skipped, not failed",
+              res3["ok"] and res3["skipped"] == "no-profile", json.dumps(res3)[:200])
+
+        # ---- a half-written manifest must not be clobbered -------------
+        broken = os.path.join(scratch, "broken", "profiles", "web")
+        os.makedirs(broken)
+        with open(os.path.join(broken, "package.json"), "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        res4 = migrate.migrate_profile(app_dir, "", "", os.path.join(scratch, "broken"))
+        check("an unreadable manifest is skipped, not failed",
+              res4["ok"] and res4["skipped"] == "no-profile", json.dumps(res4)[:200])
+        with open(os.path.join(broken, "package.json"), "r", encoding="utf-8") as fh:
+            check("an unreadable manifest is left alone", fh.read() == "{ not json")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+@case
+def test_migration_prunes_through_pnpm_install() -> None:
+    """Pruning must reconcile with pnpm, and must not depend on the dsh CLI.
+
+    ``dsh plugin --profile web remove …`` cannot work after the manifest edit:
+    the packages are no longer dependencies and pnpm refuses with
+    ERR_PNPM_CANNOT_REMOVE_MISSING_DEPS (observed on a real profile, where the
+    prune silently never happened). The migration runs ``pnpm install`` in the
+    profile instead, which drops the extraneous packages and materializes the
+    bundled store tarball.
+    """
+    import migrate  # noqa: PLC0415
+
+    scratch = tempfile.mkdtemp(prefix="dsh-prune-")
+    try:
+        profile = os.path.join(scratch, "profiles", "web")
+        os.makedirs(profile)
+        seeded = {"dependencies": {name: "^0.3.0" for name in migrate.OBSOLETE_PLUGINS}}
+        with open(os.path.join(profile, "package.json"), "w", encoding="utf-8") as fh:
+            json.dump(seeded, fh)
+
+        # The deprecated aggregate publishes upstream's own migration target.
+        pkg_dir = os.path.join(profile, "node_modules", "@linxin666", "dsh-web-ui-all")
+        os.makedirs(pkg_dir)
+        with open(os.path.join(pkg_dir, "package.json"), "w", encoding="utf-8") as fh:
+            json.dump({"name": migrate.OBSOLETE_PLUGINS[0], "version": "0.3.6",
+                       "dsh": {"migrate": {"to": migrate.NEW_AGGREGATE,
+                                           "since": "0.3.6"}}}, fh)
+
+        node_exe = os.path.join(scratch, "node.exe")
+        bin_js = os.path.join(scratch, "bin.js")
+        for path in (node_exe, bin_js):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("")
+
+        calls: list[dict] = []
+
+        class FakePopen:
+            """Stands in for pnpm.cmd: records argv/env/kwargs, then exits."""
+
+            def __init__(self, argv, **kw):
+                calls.append({"argv": list(argv), "env": dict(kw.get("env") or {}),
+                              "cwd": kw.get("cwd"), "stdout": kw.get("stdout")})
+                self.pid = 4242
+                self._code = exit_code
+
+            def wait(self, timeout=None):
+                if timeout is not None and hang:
+                    raise subprocess.TimeoutExpired("pnpm", timeout)
+                return self._code
+
+        exit_code = 0
+        hang = False
+        real_popen = migrate.subprocess.Popen
+        real_run = migrate.subprocess.run
+        killed: list[list[str]] = []
+        app_dir = os.path.join(REPO, "app")
+
+        def fake_taskkill(argv, *a, **kw):
+            killed.append(list(argv))
+            return None
+
+        migrate.subprocess.Popen = FakePopen
+        migrate.subprocess.run = fake_taskkill
+        try:
+            res = migrate.migrate_profile(app_dir, node_exe, bin_js, scratch)
+        finally:
+            migrate.subprocess.Popen = real_popen
+            migrate.subprocess.run = real_run
+
+        check("the prune is reported as done", res["pruned"] is True,
+              json.dumps(res)[:250])
+        check("pruning goes through pnpm, not `dsh plugin remove`",
+              len(calls) == 1 and "install" in calls[0]["argv"]
+              and not any("remove" in c["argv"] for c in calls),
+              json.dumps([c["argv"] for c in calls])[:250])
+        check("pnpm runs inside the profile", calls and calls[0]["cwd"] == profile,
+              str(calls[0]["cwd"]) if calls else "")
+        check("the reconcile cannot use a frozen lockfile",
+              calls and "--no-frozen-lockfile" in calls[0]["argv"]
+              and "--ignore-scripts" in calls[0]["argv"],
+              json.dumps(calls[0]["argv"]) if calls else "")
+        check("CI is cleared from pnpm's environment",
+              calls and "CI" not in calls[0]["env"] and "ci" not in calls[0]["env"])
+        check("pnpm is pointed at the instance store",
+              calls and calls[0]["env"].get("PNPM_HOME") == scratch,
+              calls[0]["env"].get("PNPM_HOME", "") if calls else "")
+        check("pnpm receives the profile's DSH_HOME",
+              calls and calls[0]["env"].get("DSH_HOME") == scratch,
+              calls[0]["env"].get("DSH_HOME", "") if calls else "")
+        check("pnpm's output goes to a file, never a pipe (no wedged pipe)",
+              calls and calls[0]["stdout"] is not None
+              and not isinstance(calls[0]["stdout"], int),
+              "capture_output would hang on an orphaned pnpm child")
+        check("the pnpm log is reported", bool(res["pruneLog"])
+              and os.path.isfile(res["pruneLog"]), res["pruneLog"])
+        check("the upstream migration target is reported",
+              res["migrateTo"] == [{"from": migrate.OBSOLETE_PLUGINS[0],
+                                    "to": migrate.NEW_AGGREGATE, "version": "0.3.6"}],
+              json.dumps(res["migrateTo"]))
+
+        # ---- a hung pnpm must be killed, not waited on forever -------------
+        calls.clear()
+        killed.clear()
+        hang = True
+        scratch_hang = tempfile.mkdtemp(prefix="dsh-prune-hang-")
+        try:
+            os.makedirs(os.path.join(scratch_hang, "profiles", "web"))
+            with open(os.path.join(scratch_hang, "profiles", "web", "package.json"),
+                      "w", encoding="utf-8") as fh:
+                json.dump({"dependencies": {name: "^0.3.0"
+                                            for name in migrate.OBSOLETE_PLUGINS}}, fh)
+            migrate.subprocess.Popen = FakePopen
+            migrate.subprocess.run = fake_taskkill
+            try:
+                res_hang = migrate.migrate_profile(app_dir, node_exe, bin_js,
+                                                   scratch_hang, timeout=5)
+            finally:
+                migrate.subprocess.Popen = real_popen
+                migrate.subprocess.run = real_run
+            check("a hung pnpm is killed and reported as a failed prune",
+                  res_hang["pruned"] is False and res_hang["ok"]
+                  and any("taskkill" in c[0] for c in killed),
+                  json.dumps(res_hang)[:200] + " killed=" + json.dumps(killed))
+        finally:
+            hang = False
+            shutil.rmtree(scratch_hang, ignore_errors=True)
+
+        # ---- pnpm failing: reported, manifest still clean ------------------
+        def fake_all_fail(argv, *a, **kw):
+            calls.append({"argv": list(argv), "env": {}, "cwd": kw.get("cwd")})
+            return None
+
+        exit_code = 2
+        scratch2 = tempfile.mkdtemp(prefix="dsh-prune2-")
+        try:
+            profile2 = os.path.join(scratch2, "profiles", "web")
+            os.makedirs(profile2)
+            with open(os.path.join(profile2, "package.json"), "w", encoding="utf-8") as fh:
+                json.dump({"dependencies": {name: "^0.3.0"
+                                            for name in migrate.OBSOLETE_PLUGINS}}, fh)
+            migrate.subprocess.Popen = FakePopen
+            migrate.subprocess.run = fake_all_fail
+            try:
+                res2 = migrate.migrate_profile(app_dir, node_exe, bin_js, scratch2)
+            finally:
+                migrate.subprocess.Popen = real_popen
+                migrate.subprocess.run = real_run
+            check("a failed prune is reported as failed, never as done",
+                  res2["pruned"] is False and res2["ok"], json.dumps(res2)[:250])
+            with open(os.path.join(profile2, "package.json"), encoding="utf-8") as fh:
+                cleaned = json.load(fh)
+            check("the manifest is still cleaned even when pnpm cannot prune",
+                  cleaned["dependencies"] == {}, json.dumps(cleaned)[:200])
+        finally:
+            shutil.rmtree(scratch2, ignore_errors=True)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+@case
+def test_migration_is_wired_into_startup_and_upgrade() -> None:
+    """Both the launcher and the update script must run the migration."""
+    main_py = open(os.path.join(REPO, "app", "main.py"), "r", encoding="utf-8").read()
+    check("main.py imports the migration module", "import migrate" in main_py)
+    heal = main_py[main_py.find("def _heal_profile"): main_py.find("def _heal_profile") + 4000]
+    check("the profile heal runs the migration", "migrate.migrate_profile(" in heal)
+    check("the migration receives the bundled core CLI",
+          "self._core.node_exe" in heal and "self._core.bin_js" in heal)
+    check("the migration runs before the heal is marked done",
+          heal.find("migrate.migrate_profile(") < heal.find("_heal_done.set()"))
+
+    migrate_py = open(os.path.join(REPO, "app", "migrate.py"), "r", encoding="utf-8").read()
+    check("the migration clears CI so pnpm cannot demand a frozen lockfile",
+          'env.pop("CI", None)' in migrate_py and 'setdefault("CI"' not in migrate_py,
+          "CI makes pnpm use --frozen-lockfile, which the manifest edit invalidates")
+
+    bat = open(os.path.join(REPO, "post-update.bat"), "rb").read().decode("mbcs")
+    remove_line = [ln for ln in bat.splitlines() if "plugin --profile web remove" in ln]
+    check("post-update.bat removes retired plugins via the core CLI", bool(remove_line))
+    joined = " ".join(remove_line)
+    import migrate  # noqa: PLC0415
+    for name in migrate.OBSOLETE_PLUGINS:
+        check(f"post-update.bat names {name}", name in joined)
+    check("post-update.bat uses the bundled node runtime when present",
+          "runtime\\node.exe" in bat)
+    check("post-update.bat points the CLI at the installed profile",
+          'set "DSH_HOME=%~dp0data\\.dsh"' in bat)
+    check("post-update.bat guards the migration when the profile is absent",
+          "goto skip_profile_migration" in bat and ":skip_profile_migration" in bat)
+    check("post-update.bat can skip the prune (smoke dry-run has no pnpm store)",
+          "no-plugin-migration.flag" in bat)
+    check("the migration runs before the smoke-test early exit",
+          bat.find("plugin --profile web remove") < bat.find("no-launch.flag"))
+    check("post-update.bat is still a valid ANSI batch file",
+          not bat.startswith("\ufeff"))
+
+
+@case
+def test_presets_use_the_compatible_new_family() -> None:
+    """The shipped presets must name packages that work with dsh 0.1.6."""
+    import migrate  # noqa: PLC0415
+
+    js = _ui_file("app.js")
+    html = _ui_file("index.html")
+    start = js.find("const PRESET_WEB_NO_SSH = [")
+    end = js.find("];", start)
+    check("the no-ssh preset still exists", 0 < start < end)
+    preset = js[start:end]
+    for name in migrate.OBSOLETE_PLUGINS:
+        check(f"the preset no longer lists {name}", name not in preset)
+    for name in ("@linxin666/dsh-client-ui-preset-center",
+                 "@linxin666/dsh-usage",
+                 "@linxin666/dsh-i18n",
+                 "@linxin666/dsh-session-archive",
+                 "@linxin666/dsh-client-ui-model-capabilities"):
+        check(f"the preset lists the current package {name}", name in preset)
+    check("the aggregate button pins the verified 0.3.23 build",
+          '"@linxin666/dsh-web-all@0.3.23"' in js)
+    check("the aggregate button no longer points at dsh-web-ui-all",
+          "dsh-web-ui-all@" not in js)
+    check("the aggregate preset button is still in the markup",
+          'id="preset-web-all"' in html)
+    check("the aggregate preset is documented in its tooltip",
+          "dsh-web-all" in html)
+
+
+@case
+def test_bundled_store_tarball_is_current() -> None:
+    """Only the current dshmarket build may ship, and it must accept 0.1.x."""
+    import tarfile  # noqa: PLC0415
+
+    store_dir = os.path.join(REPO, "app", "store")
+    tgz_names = sorted(n for n in os.listdir(store_dir) if n.lower().endswith(".tgz"))
+    check("exactly one bundled store tarball ships", len(tgz_names) == 1,
+          json.dumps(tgz_names))
+    name = tgz_names[0] if tgz_names else ""
+    check("the retired dshmarket 1.33.0 tarball is gone",
+          "1.33.0" not in name, name)
+    spec = settings.Settings.DEFAULTS["store_sources"][0]["spec"]
+    check("the store spec in settings.py matches the shipped tarball",
+          spec == f"store/{name}", spec)
+
+    # The build rebundles the store tarball; it used to default to 1.33.0 and
+    # would have silently re-shipped the retired, incompatible build.
+    import importlib.util  # noqa: PLC0415
+    rb_path = os.path.join(REPO, "scripts", "rebundle-store-tgz.py")
+    rb_spec = importlib.util.spec_from_file_location("_rebundle_store", rb_path)
+    rb = importlib.util.module_from_spec(rb_spec)
+    rb_spec.loader.exec_module(rb)
+    check("the store rebundler takes its version from settings.py",
+          f"dshmarket-{rb.bundled_version()}.tgz" == name,
+          f"{rb.bundled_version()} vs {name}")
+    source = open(rb_path, encoding="utf-8").read()
+    check("the store rebundler has no hard-coded store version",
+          'default="1.33.0"' not in source
+          and "version = args.version or bundled_version()" in source)
+    check("the store rebundler deletes superseded tarballs",
+          "_drop_superseded" in source and "removed superseded" in source)
+
+    with open(os.path.join(store_dir, name), "rb") as fh:
+        magic = fh.read(2)
+    check("the tarball is gzip-compressed", magic == b"\x1f\x8b", repr(magic))
+    with tarfile.open(os.path.join(store_dir, name), "r:gz") as tar:
+        member = tar.extractfile("package/package.json")
+        check("the tarball carries a package.json", member is not None)
+        meta = json.loads(member.read().decode("utf-8"))
+    check("the shipped version matches its file name",
+          name == f"dshmarket-{meta.get('version')}.tgz",
+          f"{name} vs {meta.get('version')}")
+    peers = meta.get("peerDependencies") or {}
+    settings_range = str(peers.get("@deepseek-ai/dsh-settings") or "")
+    check("the store accepts the current dsh-settings line",
+          "0.1.2-alpha" in settings_range, settings_range)
+    check("the store no longer pins the pre-0.1.2 range only",
+          settings_range.count("||") >= 2, settings_range)
 
 
 # ---------------------------------------------------------------------- main
@@ -1027,6 +1421,11 @@ def main() -> int:
         test_plugin_removal_validates_the_name,
         test_discovers_core_web_url_with_token,
         test_post_update_bat_refreshes_any_stale_ui,
+        test_profile_migration_drops_retired_plugins,
+        test_migration_prunes_through_pnpm_install,
+        test_migration_is_wired_into_startup_and_upgrade,
+        test_presets_use_the_compatible_new_family,
+        test_bundled_store_tarball_is_current,
     ]
     for fn in cases:
         fn()

@@ -23,6 +23,7 @@ import core_api
 import crypto
 import homes
 import junctions
+import migrate
 import plugins
 import providers
 import settings
@@ -85,6 +86,12 @@ class Bridge:
             home = os.environ.get("DSH_HOME") or homes.dsh_home(data)
             result = homes.heal_profile_store(home, data, self._core.node_exe)
             log.info("profile store heal: %s", result)
+            # 1.0.5: the retired dsh-web plugins are incompatible with the
+            # bundled kernel, and the preseeded store may be an older build.
+            # Manifest-first migration, then a best-effort prune/reinstall.
+            migration = migrate.migrate_profile(
+                APP_DIR, self._core.node_exe, self._core.bin_js, home)
+            log.info("profile migration: %s", migration)
         except Exception as exc:  # never crash the launch thread
             log.exception("profile store heal crashed")
         finally:

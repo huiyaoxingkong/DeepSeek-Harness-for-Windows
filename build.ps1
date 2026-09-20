@@ -155,7 +155,7 @@ $config = @{
         @{
             name     = "dshmarket"
             label    = "dshmarket 插件商店"
-            spec     = "store/dshmarket-1.33.0.tgz"
+            spec     = "store/dshmarket-1.50.0.tgz"
             homepage = "https://github.com/dsh-market/dsh-market"
             catalog  = "https://awesome-dsh-plugin.com/plugins.json"
             builtin  = $true

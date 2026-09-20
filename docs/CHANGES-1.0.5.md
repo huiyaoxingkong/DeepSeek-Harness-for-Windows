@@ -1,9 +1,9 @@
-﻿# 1.0.5 修改列表（待确认后打包上传）
+# 1.0.5 修改列表
 
-**状态**：代码与内核已就绪、已本地提交；**尚未打包、尚未上传**
+**状态**：代码与内核已就绪；第一版已打包并发布 v1.0.5；**本轮（旧插件清理 + 商店升级）为同版本覆盖更新**
 **基线**：上一发布提交 `e168454`（v1.0.4）
-**当前提交**：`404dc99`（缺陷修复与内核适配）、`29a937b`（随包内核 + 上传脚本）
-**变更规模**：30 个文件，+3849 / −223 行
+**当前提交**：`404dc99`（缺陷修复与内核适配）、`29a937b`（随包内核 + 上传脚本）、本轮旧插件迁移提交
+**变更规模**：33 个文件，+4100 / −223 行（含本轮）
 
 ---
 
@@ -50,6 +50,30 @@
 | --- | --- |
 | `app/ui/plugins/{example-status,example-pet,plugin-dev-kit}` → `examples/shell-plugins/` | **示例外壳插件不再随任何安装包分发**，只作开发参考（附 `README.md` 说明规范与导入方式）；`app/ui/plugins/` 不再存在，安装后「外壳插件」列表为空 |
 
+### 2.1c 旧版 dsh-web 插件清理与内置商店升级（本轮）
+
+背景（已核对 npm 元数据与包内容）：
+
+| 证据 | 内容 |
+| --- | --- |
+| 上游弃用 | `@linxin666/dsh-web-ui-all` 最新版 `0.3.6`（2026-08-27）带 npm 弃用提示「迁移到 `@linxin666/dsh-web-all`，请勿用此版本」；安装时 pnpm 打印 `[WARN] deprecated @linxin666/dsh-web-ui-all@0.3.6: 迁移到 @linxin666/dsh-web-all` |
+| 包内迁移指令 | 该包 `dsh.migrate = { to: "@linxin666/dsh-web-all", since: "0.3.6" }` |
+| 版本落差 | 旧聚合包及其全部依赖固定在 `0.3.6`；作者当前家族为 `0.3.23`（2026-09-16），声明 `dsh.engines.dsh >= 0.1.5-rc.1` |
+| 兼容问题 | 用户实测 `dsh-web-ui-all` 与随包的 `0.1.6-alpha.2` 内核不兼容（Web UI 异常） |
+
+| 文件 | 变更 |
+| --- | --- |
+| `app/migrate.py`（新增） | profile 迁移：**清单优先**把 5 个包从 `dependencies` 与 `dsh.profile.bundles` 移除（离线也生效，这是决定内核是否加载插件的地方），随后在 profile 内执行 `pnpm install --no-frozen-lockfile --ignore-scripts` 让 `node_modules` 与清单一致（删除多余旧包、装入随包商店包）；顺带把内置 `dshmarket` 依赖重指向 `<app>\store` 下最高版本的 tgz（`bundled_store()`）；记录上游 `dsh.migrate.to` 目标（只记录，**不自动安装**）；无 profile / 无运行时 / 已迁移分别返回 `no-profile` / `no-core-cli` / `up-to-date`，绝不抛异常 |
+| ↑ 两处真机实测得出的设计修正 | ① **不能用 `dsh plugin --profile web remove` 做清理**：清单已被改为不含这些依赖，pnpm 会以 `ERR_PNPM_CANNOT_REMOVE_MISSING_DEPS` 拒绝，prune 永远不会执行 → 改为 `pnpm install` 对账；② **pnpm 输出必须重定向到文件、超时用 `taskkill /F /T` 杀进程树**：Windows 上杀掉 `pnpm.cmd` 后 node 子进程仍持有管道写端，`subprocess.run(capture_output=True)` 会永久阻塞在 `communicate()`（实测卡死 30 分钟以上），导致 `_heal_done` 永不置位、**所有插件操作被阻塞** → 改为文件日志 + 超时杀树，并把 600s 作为上限 |
+| `scripts/rebundle-store-tgz.py` | 默认版本不再硬编码 `1.33.0`，改为从 `app/settings.py` 的内置商店 spec 推导；构建时删除其它 `dshmarket-*.tgz`（否则 `-SkipCoreBuild` 打包会把已下线的旧商店包重新塞回安装包） |
+| `app/main.py` | `_heal_profile()` 在 profile store 自愈后调用 `migrate.migrate_profile(APP_DIR, node_exe, bin_js, home)`，位于 `_heal_done.set()` 之前（插件操作会等它） |
+| `post-update.bat` | 新增升级期清理块：`set DSH_HOME=…\data\.dsh` + `node core\apps\cli\lib\bin.js plugin --profile web remove <5 个包>`，profile 或 CLI 缺失时 `goto skip_profile_migration` 安全跳过；冒烟测试的 dry-run 副本没有 pnpm store，用 `no-plugin-migration.flag` 跳过（由 `smoke-release.ps1` 生成） |
+| ↑ 批处理文件编码修复（冒烟实测发现） | `post-update.bat` / `post-install.bat` 必须是**严格 GBK + CRLF**：此前编辑把 UTF-8 写进了 ANSI 批处理，产生替换字符（U+FFFD），其双字节前导字节吞掉换行，cmd.exe 失去行边界、把后续行当命令执行（实测升级脚本整个跑飞、junction 未恢复）→ 已从干净版本重建，并新增回归检查（无 BOM / 严格 GBK / 无替换字符 / 全 CRLF） |
+| `app/settings.py`、`build.ps1` | 内置商店源 spec 由 `store/dshmarket-1.33.0.tgz` 改为 `store/dshmarket-1.50.0.tgz` |
+| `app/store/dshmarket-1.50.0.tgz`（替换） | 1.33.0 → **1.50.0**（peer `@deepseek-ai/dsh-settings: ^0.1.0-rc.7 \|\| ^0.1.1-rc.2 \|\| ^0.1.2-alpha.2`，可在 0.1.6 内核上加载）；1.33.0 的 peer `^0.1.1-rc.2` 不含 0.1.6 |
+| `app/ui/app.js` | 「一键填入全家桶」→ `@linxin666/dsh-web-all@0.3.23`；「免编译预设」对齐作者当前 19 个包 + `dsh-better-sidebar` + `@mlgbnb/dsh-archive-manager`（移除 `dsh-web-ui-all` / `chat-recovery` / `desktop-launcher` / `perf` / `client-ui-aionui-panel`，补入 `dsh-i18n` / `dsh-usage` / `dsh-client-ui-preset-center` / `dsh-client-ui-model-capabilities` / `dsh-session-archive`） |
+| `app/ui/index.html`、`app/ui/i18n.js` | 预设按钮文案与提示同步为「dsh-web 全家桶（聚合包 0.3.23）」 |
+
 ### 2.2 构建与发布
 
 | 文件 | 变更 |
@@ -72,7 +96,7 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `tools/test-1.0.5.py` | **152 项**回归（长路径/只读/junction、入口解析、启动梯度、token 地址、健康检查、换核回滚、UI 同步、解码、CSS 不变式、重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验） |
+| `tools/test-1.0.5.py` | **241 项**回归（长路径/只读/junction、入口解析、启动梯度、token 地址、健康检查、换核回滚、UI 同步、解码、CSS 不变式、重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验、**旧插件迁移与 prune 回退、预设包集合、随包商店包版本、启动/升级脚本接线**） |
 | `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 |
 | `tools/audit-backend.py` | **65 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法并校验返回结构与持久化 |
 | `tools/check-duplicate-ids.py` | 单独排查 HTML 重复 id（会被 `getElementById` 静默绑定到错误元素） |
@@ -80,6 +104,7 @@
 | `tools/core-update-test/run_core_update.py` | 用启动器自身的更新管线在实例目录真机升级/降级 |
 | `tools/core-update-test/test_launch_ladder.py` | 真实 CLI 的启动参数降级与记忆验证 |
 | `tools/core-update-test/test_plugin_on_core.py` | 真实内核上的插件安装/列出/卸载验证 |
+| `tools/core-update-test/test_plugin_migration_on_core.py`（新增） | 在开发实例的真实内核上复现升级前状态（5 个旧包 + 旧商店）→ 商店源重指向 → 迁移（清单 + `node_modules`）→ 安装 `@linxin666/dsh-web-all@0.3.23` → 内核启动与 HTTP 校验 |
 | `examples/shell-plugins/`（含 README） | 外壳插件示例与开发套件：仅作开发参考，**不随包分发** |
 
 ---
@@ -93,7 +118,7 @@
 | 打包依赖 | `pyinstaller 6.22.2`、`pywebview 6.2.1`、`pyinstaller-hooks-contrib 2026.7`、`pythonnet 3.1.0`、`clr_loader 0.3.1`、`bottle 0.13.4`、`proxy_tools 0.1.0`、`PyYAML 6.0.3`、`setuptools 84.0.0`、`typing_extensions 4.16.0` |
 | 冒烟验证 | PyInstaller 冻结「import webview + yaml」测试程序并成功运行；`_internal` 产出 `webview/pythonnet/clr_loader/yaml/setuptools`，与 1.0.4 包结构一致 |
 | 与 1.0.4 差异 | 不再打入 `cryptography` / `bcrypt`（应用未引用；`app/crypto.py` 走 ctypes/DPAPI），包体更小 |
-| 其它就绪 | `runtime/`（Node 24.16.0 + PortableGit 2.55.0）、`app/store/dshmarket-1.33.0.tgz`、`tools/7zip`（含 GUI SFX 模块）均在位 |
+| 其它就绪 | `runtime/`（Node 24.16.0 + PortableGit 2.55.0）、`app/store/dshmarket-1.50.0.tgz`、`tools/7zip`（含 GUI SFX 模块）均在位 |
 
 ---
 
@@ -101,9 +126,11 @@
 
 | 测试 | 结果 |
 | --- | --- |
-| `tools/test-1.0.5.py`（含新工具链运行） | **152/152 通过** |
+| `tools/test-1.0.5.py`（含新工具链运行） | **247/247 通过** |
 | `tools/audit-features.py` | **ALL CHECKS PASS**（无缺失/重复 id、无未实现按钮、无未实现桥方法、示例插件未随包） |
 | `tools/audit-backend.py` | **65/65 通过**（全部 Bridge 方法可用且返回结构正确） |
+| `tools/core-update-test/test_plugin_migration_on_core.py`（新增） | **32/32 通过**：真实 0.1.6 内核上复现旧插件 + 旧商店的升级前状态 → 商店源重指向 → 迁移（清单 + pnpm 对账 + 幂等）→ 安装 `@linxin666/dsh-web-all@0.3.23` → 迁移前后内核均 token 地址 HTTP 200 / 裸地址 401 |
+| 安装包冒烟 `smoke-release.ps1`（懒人包 / 极简包） | 真实解包 + 校验 + 升级 dry-run（`post-update.bat` 真实执行、UI 合并刷新、用户文件保留、核心 junction 恢复）**全部通过** |
 | `tools/immersive-check/`（Edge 153 无头，13 场景） | **16/16 通过**；修复前退出全屏 iframe=980×150，修复后 980×622；外观 `rgb(14,17,22)`→`rgb(244,246,250)`；导航「◇插件」→「◇Plugins」；取消更新可点击并调用 `cancel_update` |
 | 真机升级 `0.1.1-rc.2 → 0.1.6-alpha.2` | 通过（备份回收、健康检查 exit 0、HTTP 200） |
 | 真机降级 `0.1.6-alpha.2 → 0.1.1-rc.2` | 通过（裸地址 HTTP 200，旧内核无需 token） |
@@ -125,34 +152,43 @@
 
 ---
 
-## 五、待确认后执行的打包
+## 五、打包（同版本覆盖发布）
+
+第一版 v1.0.5 已打包并发布；本轮代码变更（`app/migrate.py` 等）后**以同一版本 1.0.5 重新打包**
+（用户确认：版本号不变、覆盖上传）。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.5 -Flavor Lazy
-powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.5 -Flavor Minimal
-powershell -ExecutionPolicy Bypass -File scripts\smoke-release.ps1  -Version 1.0.5
-powershell -ExecutionPolicy Bypass -File scripts\smoke-release.ps1  -Version 1.0.5 -Flavor Minimal
+# 便携工具链（不写系统环境）：PyInstaller 打包 → dist\DeepSeek Harness
+$env:PATH = "<repo>\tools\python-full\pkg\tools;$env:PATH"
+powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.0.5 -SkipCoreBuild -Flavor Lazy
+powershell -ExecutionPolicy Bypass -File build.ps1 -Version 1.0.5 -SkipCoreBuild -Flavor Minimal
+# 自解压安装/升级包 + 校验文件
+powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.5 -Flavor Lazy -SkipBuild
+powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 -Version 1.0.5 -Flavor Minimal -SkipBuild
+# 冒烟（真实安装 → 启动 → 检查 payload / UI 合并刷新 / junction 恢复 / 商店包）
+powershell -ExecutionPolicy Bypass -File scripts\smoke-release.ps1 -Version 1.0.5
+powershell -ExecutionPolicy Bypass -File scripts\smoke-release.ps1 -Version 1.0.5 -Flavor Minimal
 ```
 
-产物（`release/`）：`DeepSeekHarness-1.0.5-Setup.exe`、`-Update.exe`、`-Minimal-Setup.exe`、`-Minimal-Update.exe` + 各自 `.sha256` + `SHA256SUMS-1.0.5[-Minimal].txt`（参考 1.0.4：懒人包 ≈530MB、极简包 ≈447MB）。预计 45–90 分钟；磁盘余量 41.7GB。
+产物（`release/`）：`DeepSeekHarness-1.0.5-Setup.exe`、`-Update.exe`、`-Minimal-Setup.exe`、
+`-Minimal-Update.exe` + 各自 `.sha256` + `SHA256SUMS-1.0.5[-Minimal].txt`。
 
-## 六、上传前需要确认的网络与凭据
+## 六、覆盖上传（v1.0.5 同标签重发）
 
-本机实测（当前时刻）：
+`scripts/upload-release.mjs` 本轮补齐“重发”能力：
 
-| 目标 | 结果 |
+| 参数 | 作用 |
 | --- | --- |
-| `api.github.com` | ✅ 可达（Release 创建、Git Data API 均返回 401“需认证”，说明路由可达） |
-| `codeload.github.com`、`objects.githubusercontent.com` | ✅ 可达 |
-| **`github.com`（git push、`uploads.github.com`）** | ❌ 连接超时（`20.205.243.166`，与网络环境有关；早前 `ls-remote` 曾成功一次，属间歇性） |
+| `--force-tag` | 已存在的标签移动到当前 HEAD（本地 `git tag -af` + `git push --force origin <tag>`） |
+| （默认）release 已存在时 | `PATCH /releases/<id>` 用最新 `RELEASE_NOTES.md` 刷新发布说明 |
+| 同名资产 | 先 `DELETE /releases/assets/<id>` 再重新上传（原有行为） |
 
-因此：
+实际命令（凭据取 `GITHUB_TOKEN`/`GH_TOKEN`/git 凭据助手，push 走 `github.com`，资产走 `uploads.github.com`）：
 
-- **源码推送**：`git push` 走 github.com，当前不可用；可改用 **Git Data API**（api.github.com ✅）推送这 2 个提交与 `v1.0.5` 标签；
-- **Release 资产（4 个安装包，约 2GB）**：官方上传域名 `uploads.github.com` 指向 github.com，当前不可用。可行方案：
-  1. 换到能访问 github.com 的网络（或代理/VPN）后由本机上传；
-  2. 由你在本机执行 `scripts\upload-release.ps1`（沿用 v1.0.3 的做法）；
-  3. 等待网络恢复后重试（脚本内置重试与退避）。
-- **凭据**：本机 `git credential fill` 非交互读取失败（`terminal prompts disabled`），因此脚本需要 `GITHUB_TOKEN`（或 `--token`）。若你确认 git 已登录且网络可用，可在能访问 github.com 的会话里直接执行上传命令。
+```powershell
+node scripts\upload-release.mjs --version 1.0.5 --force-tag
+```
 
-> 结论：**打包可以随时开始**；上传建议在网络能访问 `github.com` 的环境执行，或提供 token 由我走 API 路径（源码+标签可走 API，安装包资产受 `uploads.github.com` 限制）。
+网络说明：本机 `github.com`（git push、`uploads.github.com`）为**间歇性不可达**，
+`api.github.com` / `codeload.github.com` / `objects.githubusercontent.com` 稳定可达；
+脚本内置重试与退避，失败可原样重跑（已存在的 release 与同名资产会被正确替换）。

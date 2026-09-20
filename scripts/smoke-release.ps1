@@ -122,6 +122,10 @@ Set-Content -Path (Join-Path $installCopy "data\marker.txt") -Value "instance-da
 Set-Content -Path (Join-Path $installCopy "ui\custom.css") -Value "/* user skin */"
 $userConfig = Get-Content (Join-Path $installCopy "config.json") -Raw
 Set-Content -Path (Join-Path $installCopy "no-launch.flag") -Value ""
+# The dry-run copy has no pnpm store (excluded above), so the update script would
+# download the whole plugin closure before its `plugin remove`; skip that step
+# here -- the launcher migration and the real upgrade path are covered elsewhere.
+Set-Content -Path (Join-Path $installCopy "no-plugin-migration.flag") -Value ""
 
 # module check: the update exe must use the GUI SFX module (7z.sfx bytes)
 $moduleHead = [IO.File]::ReadAllBytes((Join-Path $root "tools\7zip\7z.sfx"))[0..4095]
