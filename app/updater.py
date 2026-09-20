@@ -508,27 +508,30 @@ class CoreUpdater:
         if extra_env:
             env.update(extra_env)
         log.info("run pnpm in %s: %s", src_dir, " ".join(args))
-        proc = subprocess.Popen(
-            cmd, cwd=src_dir, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace",
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        assert proc.stdout is not None
         last_lines: list[str] = []
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line:
-                last_lines.append(line)
-                if len(last_lines) > 8:
-                    last_lines.pop(0)
-                with self._lock:
-                    self._state["message"] = f"{line[:90]}"
-        proc.wait()
-        if proc.returncode != 0:
+
+        def on_line(line: str) -> None:
+            if not line:
+                return
+            last_lines.append(line)
+            if len(last_lines) > 8:
+                last_lines.pop(0)
+            with self._lock:
+                self._state["message"] = f"{line[:90]}"
+
+        # Streamed through `homes.run_stream`, which reads on a daemon thread
+        # (a killed pnpm.cmd leaves node holding a raw pipe -> a reader loop on
+        # this thread would never reach EOF) and watches `self._cancel`, so
+        # 「取消更新」 really stops a pnpm install/build instead of waiting it
+        # out for tens of minutes.
+        code = homes.run_stream(cmd, cwd=src_dir, env=env, on_line=on_line,
+                                stop=self._cancel)
+        if code != 0:
             detail = "\n".join(last_lines[-8:])
+            if self._cancel.is_set():
+                raise RuntimeError("更新已取消")
             raise RuntimeError(
-                f"pnpm {' '.join(args)} 退出码 {proc.returncode}\n最近输出:\n{detail}"
+                f"pnpm {' '.join(args)} 退出码 {code}\n最近输出:\n{detail}"
             )
 
     def _swap(self, src_dir: str) -> None:

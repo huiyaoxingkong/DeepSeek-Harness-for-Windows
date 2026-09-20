@@ -66,6 +66,7 @@
 | `app/migrate.py`（新增） | profile 迁移：**清单优先**把 5 个包从 `dependencies` 与 `dsh.profile.bundles` 移除（离线也生效，这是决定内核是否加载插件的地方），随后在 profile 内执行 `pnpm install --no-frozen-lockfile --ignore-scripts` 让 `node_modules` 与清单一致（删除多余旧包、装入随包商店包）；顺带把内置 `dshmarket` 依赖重指向 `<app>\store` 下最高版本的 tgz（`bundled_store()`）；记录上游 `dsh.migrate.to` 目标（只记录，**不自动安装**）；无 profile / 无运行时 / 已迁移分别返回 `no-profile` / `no-core-cli` / `up-to-date`，绝不抛异常 |
 | ↑ 两处真机实测得出的设计修正 | ① **不能用 `dsh plugin --profile web remove` 做清理**：清单已被改为不含这些依赖，pnpm 会以 `ERR_PNPM_CANNOT_REMOVE_MISSING_DEPS` 拒绝，prune 永远不会执行 → 改为 `pnpm install` 对账；② **pnpm 输出必须重定向到文件、超时用 `taskkill /F /T` 杀进程树**：Windows 上杀掉 `pnpm.cmd` 后 node 子进程仍持有管道写端，`subprocess.run(capture_output=True)` 会永久阻塞在 `communicate()`（实测卡死 30 分钟以上），导致 `_heal_done` 永不置位、**所有插件操作被阻塞** → 改为文件日志 + 超时杀树，并把 600s 作为上限 |
 | `scripts/rebundle-store-tgz.py` | 默认版本不再硬编码 `1.33.0`，改为从 `app/settings.py` 的内置商店 spec 推导；构建时删除其它 `dshmarket-*.tgz`（否则 `-SkipCoreBuild` 打包会把已下线的旧商店包重新塞回安装包） |
+| `app/homes.py`、`app/updater.py`（卡死点加固） | 新增 `kill_process_tree()`（`taskkill /F /T`）、`run_capture()`（输出写文件、超时杀进程树——替代 Windows 上会永久阻塞的 `subprocess.run(capture_output=True, timeout=…)`）、`run_stream()`（守护线程读输出 + 可取消 + 杀树）。改用于：profile store 自愈的 pnpm install（原 timeout=1800s 的管道捕获，一旦超时会让 `_heal_done` 永不置位、**所有插件操作永久阻塞**）、健康检查的 `dsh --dump-config`（内核会再生成子进程）、以及核心更新的 pnpm install/build（原 `for line in proc.stdout` 读原始管道且**无法取消**：点「取消更新」后仍要等整轮 pnpm 跑完；现在 `stop=self._cancel`，取消即刻杀树返回） |
 | `app/main.py` | `_heal_profile()` 在 profile store 自愈后调用 `migrate.migrate_profile(APP_DIR, node_exe, bin_js, home)`，位于 `_heal_done.set()` 之前（插件操作会等它） |
 | `post-update.bat` | 新增升级期清理块：`set DSH_HOME=…\data\.dsh` + `node core\apps\cli\lib\bin.js plugin --profile web remove <5 个包>`，profile 或 CLI 缺失时 `goto skip_profile_migration` 安全跳过；冒烟测试的 dry-run 副本没有 pnpm store，用 `no-plugin-migration.flag` 跳过（由 `smoke-release.ps1` 生成） |
 | ↑ 批处理文件编码修复（冒烟实测发现） | `post-update.bat` / `post-install.bat` 必须是**严格 GBK + CRLF**：此前编辑把 UTF-8 写进了 ANSI 批处理，产生替换字符（U+FFFD），其双字节前导字节吞掉换行，cmd.exe 失去行边界、把后续行当命令执行（实测升级脚本整个跑飞、junction 未恢复）→ 已从干净版本重建，并新增回归检查（无 BOM / 严格 GBK / 无替换字符 / 全 CRLF） |
@@ -96,7 +97,7 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `tools/test-1.0.5.py` | **241 项**回归（长路径/只读/junction、入口解析、启动梯度、token 地址、健康检查、换核回滚、UI 同步、解码、CSS 不变式、重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验、**旧插件迁移与 prune 回退、预设包集合、随包商店包版本、启动/升级脚本接线**） |
+| `tools/test-1.0.5.py` | **259 项**回归（长路径/只读/junction、入口解析、启动梯度、token 地址、健康检查、换核回滚、UI 同步、解码、CSS 不变式、重复 id、主题加载、i18n 空白匹配、取消更新控件、示例插件不随包、卸载校验、**旧插件迁移与 prune 回退、预设包集合、随包商店包版本、启动/升级脚本接线**） |
 | `tools/audit-features.py` | 静态交叉核对：DOM id 引用与重复、`callApi` ↔ Bridge 方法、按钮是否有实现、示例插件是否随包 |
 | `tools/audit-backend.py` | **65 项**后端功能核对：对临时实例逐个调用全部 Bridge 方法并校验返回结构与持久化 |
 | `tools/check-duplicate-ids.py` | 单独排查 HTML 重复 id（会被 `getElementById` 静默绑定到错误元素） |
@@ -126,7 +127,7 @@
 
 | 测试 | 结果 |
 | --- | --- |
-| `tools/test-1.0.5.py`（含新工具链运行） | **247/247 通过** |
+| `tools/test-1.0.5.py`（含新工具链运行） | **259/259 通过** |
 | `tools/audit-features.py` | **ALL CHECKS PASS**（无缺失/重复 id、无未实现按钮、无未实现桥方法、示例插件未随包） |
 | `tools/audit-backend.py` | **65/65 通过**（全部 Bridge 方法可用且返回结构正确） |
 | `tools/core-update-test/test_plugin_migration_on_core.py`（新增） | **32/32 通过**：真实 0.1.6 内核上复现旧插件 + 旧商店的升级前状态 → 商店源重指向 → 迁移（清单 + pnpm 对账 + 幂等）→ 安装 `@linxin666/dsh-web-all@0.3.23` → 迁移前后内核均 token 地址 HTTP 200 / 裸地址 401 |

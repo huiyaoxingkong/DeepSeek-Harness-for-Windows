@@ -77,7 +77,7 @@ node tools\immersive-check\cdp_probe.mjs --shell-port <shell> --core-port <core>
 `tools\test-1.0.5.py`（自包含，仅标准库）：
 
 ```
-1.0.5 regression tests: 228/228 passed
+1.0.5 regression tests: 259/259 passed
 ALL PASS
 ```
 
@@ -245,6 +245,25 @@ dsh **0.1.6-alpha.2** 内核，在一次性的实例目录里复现「已升级�
    30 分钟以上），`_heal_done` 永不置位 → **所有插件操作被阻塞**。现改为把 pnpm 输出写入
    `profiles/web/.plugin-manager/logs/profile-migration-pnpm.log`，超时用
    `taskkill /F /T` 杀进程树，并把上限收敛到 600s。
+
+### 7.1 卡死点排查（本轮，真实进程实测）
+
+同一形态的三处调用点已全部加固为 `homes.run_capture`（输出写文件 + 超时杀树）与
+`homes.run_stream`（守护线程读输出 + 取消感知 + 杀树）：
+
+| 调用点 | 原写法 | 后果 | 现状 |
+| --- | --- | --- | --- |
+| profile store 自愈 pnpm install | `subprocess.run(capture_output=True, timeout=1800)` | 超时后永久阻塞 → `_heal_done` 永不置位 → 所有插件操作永久卡住 | 文件日志 + 杀树 |
+| 健康检查 `dsh --dump-config` | 同上（timeout=60） | 内核子进程持有管道 → 调用线程永久阻塞 | 文件日志 + 杀树 |
+| 核心更新 pnpm install/build | `for line in proc.stdout` 读原始管道，且不响应取消 | 「取消更新」形同虚设，要等整轮 pnpm 跑完 | 守护线程 + `stop=self._cancel` + 杀树 |
+
+真实进程实测：
+
+```
+run_capture 挂死子进程 -> code=-1 elapsed=3.7s     （timeout=3s，杀树返回）
+run_capture 正常子进程 -> code=0  out='hello'      （输出来自日志文件）
+run_stream  运行中取消 -> code=-1 elapsed=2.2s lines=['a']  （已产出的输出仍收到）
+```
 
 ## 八、结论与遗留
 

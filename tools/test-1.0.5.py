@@ -1155,20 +1155,23 @@ def test_migration_prunes_through_pnpm_install() -> None:
         hang = False
         real_popen = migrate.subprocess.Popen
         real_run = migrate.subprocess.run
+        real_homes_run = homes.subprocess.run
         killed: list[list[str]] = []
         app_dir = os.path.join(REPO, "app")
 
         def fake_taskkill(argv, *a, **kw):
             killed.append(list(argv))
-            return None
+            return type("P", (), {"returncode": 0})()
 
         migrate.subprocess.Popen = FakePopen
         migrate.subprocess.run = fake_taskkill
+        homes.subprocess.run = fake_taskkill
         try:
             res = migrate.migrate_profile(app_dir, node_exe, bin_js, scratch)
         finally:
             migrate.subprocess.Popen = real_popen
             migrate.subprocess.run = real_run
+            homes.subprocess.run = real_homes_run
 
         check("the prune is reported as done", res["pruned"] is True,
               json.dumps(res)[:250])
@@ -1214,12 +1217,14 @@ def test_migration_prunes_through_pnpm_install() -> None:
                                             for name in migrate.OBSOLETE_PLUGINS}}, fh)
             migrate.subprocess.Popen = FakePopen
             migrate.subprocess.run = fake_taskkill
+            homes.subprocess.run = fake_taskkill
             try:
                 res_hang = migrate.migrate_profile(app_dir, node_exe, bin_js,
                                                    scratch_hang, timeout=5)
             finally:
                 migrate.subprocess.Popen = real_popen
                 migrate.subprocess.run = real_run
+                homes.subprocess.run = real_homes_run
             check("a hung pnpm is killed and reported as a failed prune",
                   res_hang["pruned"] is False and res_hang["ok"]
                   and any("taskkill" in c[0] for c in killed),
@@ -1258,6 +1263,110 @@ def test_migration_prunes_through_pnpm_install() -> None:
             shutil.rmtree(scratch2, ignore_errors=True)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+@case
+def test_subprocess_helpers_never_pipe_a_killed_tree() -> None:
+    """No shipped subprocess may block on a pipe whose writer outlived it.
+
+    ``subprocess.run(capture_output=True, timeout=…)`` is a deadlock on
+    Windows: killing ``pnpm.cmd``/``cmd`` leaves the grandchild alive holding
+    the pipe, so ``communicate()`` never returns and the thread that owns
+    ``_heal_done`` (or the core-update worker) hangs forever. The shipped code
+    must use ``homes.run_capture`` (file output + tree kill) or
+    ``homes.run_stream`` (daemon reader + cancel-aware + tree kill).
+    """
+    import threading  # noqa: PLC0415
+
+    calls: list[dict] = []
+    killed: list[list[str]] = []
+
+    class FakePopen:
+        def __init__(self, argv, **kw):
+            calls.append({"argv": list(argv), "kw": kw,
+                          "stdout": kw.get("stdout")})
+            self.pid = 777
+            self.stdout = _FakeStdout()
+
+        def wait(self, timeout=None):
+            # Hang until the tree is killed, then exit like a real killed child.
+            if always_hang and not killed:
+                raise subprocess.TimeoutExpired("x", timeout)
+            return 0
+
+    class _FakeStdout:
+        def __iter__(self):
+            return iter(["line one\n", "line two\n"])
+
+    always_hang = True
+    real_popen = homes.subprocess.Popen
+    real_run = homes.subprocess.run
+    real_kill = homes.kill_process_tree
+
+    def fake_taskkill(argv, *a, **kw):
+        killed.append(list(argv))
+        return type("P", (), {"returncode": 0})()
+
+    def fake_kill(pid):
+        killed.append(["kill_process_tree", str(pid)])
+        return True
+
+    homes.subprocess.Popen = FakePopen
+    homes.subprocess.run = fake_taskkill
+    homes.kill_process_tree = fake_kill
+    try:
+        # ---- run_capture: file output, tree killed on timeout ---------------
+        code, out = homes.run_capture(["pnpm", "install"], timeout=0.5)
+        check("run_capture reports failure when the child hangs", code == -1, str(code))
+        check("run_capture kills the whole tree on timeout",
+              any(c[0] == "kill_process_tree" for c in killed), json.dumps(killed))
+        check("run_capture never captures through a pipe",
+              calls and calls[0]["kw"].get("stdout") is not None
+              and not isinstance(calls[0]["kw"].get("stdout"), int)
+              and "capture_output" not in calls[0]["kw"],
+              "stdout must be a log file, not subprocess.PIPE")
+        check("run_capture's log path is honoured",
+              os.path.dirname(calls[0]["kw"]["stdout"].name) != "",
+              calls[0]["kw"]["stdout"].name)
+        calls.clear()
+        killed.clear()
+
+        # ---- run_stream: cancel is observed, reader cannot wedge ------------
+        stop = threading.Event()
+        stop.set()
+        started = time.time()
+        code = homes.run_stream(["pnpm", "build"], stop=stop, on_line=lambda _l: None)
+        elapsed = time.time() - started
+        check("run_stream returns immediately when already cancelled", code == -1, str(code))
+        check("a cancelled run does not wait the command out", elapsed < 5,
+              f"{elapsed:.1f}s")
+        check("a cancelled run kills the whole tree",
+              any(c[0] == "kill_process_tree" for c in killed), json.dumps(killed))
+        check("run_stream reads on a daemon thread, not the caller",
+              calls and calls[0]["kw"].get("stdout") == subprocess.PIPE
+              and "capture_output" not in calls[0]["kw"])
+    finally:
+        homes.subprocess.Popen = real_popen
+        homes.subprocess.run = real_run
+        homes.kill_process_tree = real_kill
+
+    # ---- the shipped call sites use those helpers ---------------------------
+    homes_src = open(os.path.join(REPO, "app", "homes.py"), "r", encoding="utf-8").read()
+    heal = homes_src[homes_src.find("def heal_profile_store"):]
+    heal = heal[:heal.find("\ndef ", 10)]
+    check("the profile-store heal runs pnpm through run_capture",
+          "run_capture(" in heal and "capture_output" not in heal)
+    health = homes_src[homes_src.find("def run_health_check"):]
+    check("the health check runs the core through run_capture",
+          "run_capture(" in health and "capture_output" not in health)
+
+    updater_src = open(os.path.join(REPO, "app", "updater.py"), "r", encoding="utf-8").read()
+    pnpm_body = updater_src[updater_src.find("def _run_pnpm"):]
+    pnpm_body = pnpm_body[:pnpm_body.find("\n    def ", 10)]
+    check("core-update pnpm runs stream, so cancel really cancels",
+          "homes.run_stream(" in pnpm_body and "stop=self._cancel" in pnpm_body)
+    check("core-update pnpm no longer reads a raw pipe",
+          "subprocess.Popen(" not in pnpm_body)
 
 
 @case
@@ -1423,6 +1532,7 @@ def main() -> int:
         test_post_update_bat_refreshes_any_stale_ui,
         test_profile_migration_drops_retired_plugins,
         test_migration_prunes_through_pnpm_install,
+        test_subprocess_helpers_never_pipe_a_killed_tree,
         test_migration_is_wired_into_startup_and_upgrade,
         test_presets_use_the_compatible_new_family,
         test_bundled_store_tarball_is_current,

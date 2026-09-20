@@ -201,12 +201,7 @@ def _pnpm_install(home: str, node_exe: str, timeout: float) -> tuple[bool, str]:
 
 def _kill_tree(pid: int) -> None:
     """Kill a process and its children (pnpm.cmd is a cmd.exe wrapper)."""
-    try:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, timeout=60,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
-    except (OSError, subprocess.TimeoutExpired) as exc:  # pragma: no cover
-        log.warning("could not kill pnpm tree %s: %s", pid, exc)
+    homes.kill_process_tree(pid)
 
 
 def _tail(path: str, limit: int = 300) -> str:

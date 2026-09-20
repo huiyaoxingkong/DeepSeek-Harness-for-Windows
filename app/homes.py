@@ -29,6 +29,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 
 log = logging.getLogger("homes")
@@ -233,6 +234,134 @@ def _merge_store_files(src_store: str, dst_store: str) -> tuple[int, int]:
     return copied, skipped
 
 
+def kill_process_tree(pid: int) -> bool:
+    """Kill a process and every child it spawned (best effort).
+
+    Needed because the wrappers used on Windows (``pnpm.cmd`` -> cmd.exe ->
+    node.exe) do not die as a tree: killing only the direct child leaves node
+    alive, holding the write end of any pipe it inherited.
+    """
+    if not pid:
+        return False
+    try:
+        proc = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True, timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.warning("taskkill %s failed: %s", pid, exc)
+        return False
+    return proc.returncode == 0
+
+
+def run_capture(argv: list[str], *, cwd: str = "", env: dict | None = None,
+                timeout: float = 60.0, log_path: str = "",
+                encoding: str = "utf-8") -> tuple[int, str]:
+    """Run *argv* and capture its output **without a pipe**.
+
+    ``subprocess.run(capture_output=True, timeout=…)`` deadlocks on Windows
+    when the timeout fires: the killed wrapper leaves its node grandchild alive
+    with the pipe's write end open, so ``communicate()`` never sees EOF and the
+    calling thread (here: the startup heal thread that owns ``_heal_done``, or
+    the update worker) hangs forever. Output goes to a file instead, the whole
+    tree is killed on timeout, and the caller always gets an answer.
+    """
+    fd, tmp = tempfile.mkstemp(prefix="dsh-capture-", suffix=".log")
+    os.close(fd)
+    target = log_path or tmp
+    code = -1
+    try:
+        with open(target, "wb") as out:
+            proc = subprocess.Popen(
+                argv, cwd=cwd or None, env=env, stdout=out,
+                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            try:
+                code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                log.warning("command timed out after %.0fs, killing tree: %s",
+                            timeout, " ".join(argv))
+                kill_process_tree(proc.pid)
+                code = -1
+            except BaseException:  # noqa: BLE001 - never leak the child
+                kill_process_tree(proc.pid)
+                raise
+        try:
+            with open(target, "r", encoding=encoding, errors="replace") as fh:
+                return code, fh.read()
+        except OSError:
+            return code, ""
+    except OSError as exc:
+        log.warning("could not run %s: %s", " ".join(argv), exc)
+        return -1, ""
+    finally:
+        if not log_path:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def run_stream(argv: list[str], *, cwd: str = "", env: dict | None = None,
+               on_line=None, stop: "threading.Event | None" = None,
+               timeout: float | None = None) -> int:
+    """Run *argv*, streaming output, observably cancellable, hang-proof.
+
+    The reader runs on a daemon thread, so the caller never blocks on a pipe
+    whose writer outlived its parent. ``stop`` is polled every 0.5s: when it is
+    set (the updater's 「取消更新」) the process tree is killed and -1 returned
+    instead of waiting out a pnpm install that no longer matters.
+    """
+    proc = subprocess.Popen(
+        argv, cwd=cwd or None, env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert proc.stdout is not None
+
+    def reader() -> None:
+        try:
+            for line in proc.stdout:
+                if on_line is not None:
+                    on_line(line.rstrip())
+        except (OSError, ValueError):
+            pass
+
+    def reap() -> None:
+        """Wait briefly for a killed child; never block the caller on it."""
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            log.warning("killed command did not exit: %s", " ".join(argv))
+        except OSError:
+            pass
+
+    pump = threading.Thread(target=reader, daemon=True)
+    pump.start()
+    deadline = time.time() + timeout if timeout else None
+    try:
+        while True:
+            if stop is not None and stop.is_set():
+                log.info("command cancelled, killing tree: %s", " ".join(argv))
+                kill_process_tree(proc.pid)
+                reap()
+                return -1
+            try:
+                return proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                if deadline is not None and time.time() >= deadline:
+                    log.warning("command timed out after %.0fs, killing tree: %s",
+                                timeout, " ".join(argv))
+                    kill_process_tree(proc.pid)
+                    reap()
+                    return -1
+    finally:
+        pump.join(timeout=2)
+
+
 def heal_profile_store(home: str, data: str, node_exe: str) -> dict:
     """Guarantee the web profile's node_modules is linked from the instance
     pnpm store (``PNPM_HOME=<data>`` derives the store at ``<data>\\store``).
@@ -312,21 +441,15 @@ def heal_profile_store(home: str, data: str, node_exe: str) -> dict:
     env["pnpm_config_fetch_timeout"] = "600000"
     env["pnpm_config_fetch_retries"] = "5"
     log.info("profile store heal: pnpm install in %s", profile)
-    try:
-        proc = subprocess.run(
-            [pnpm, "install", "--no-frozen-lockfile", "--ignore-scripts"],
-            cwd=profile, env=env, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=1800,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        log.info("profile store heal exit: %d", proc.returncode)
-        if proc.returncode != 0:
-            detail = (proc.stdout or "")[-400:] + (proc.stderr or "")[-400:]
-            result.update(ok=False, error=f"pnpm exit {proc.returncode}",
-                          detail=detail.strip() or "")
-            return result
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        result.update(ok=False, error=str(exc))
+    code, output = run_capture(
+        [pnpm, "install", "--no-frozen-lockfile", "--ignore-scripts"],
+        cwd=profile, env=env, timeout=1800,
+        log_path=os.path.join(data, "store-heal-pnpm.log"),
+    )
+    log.info("profile store heal exit: %d", code)
+    if code != 0:
+        result.update(ok=False, error=f"pnpm exit {code}",
+                      detail=(output or "").strip()[-800:])
         return result
     result["rebuilt"] = True
     # Leftovers from an earlier rename-based rebuild: locked native files may
@@ -957,19 +1080,13 @@ def run_health_check(app_dir: str, cfg, node_exe: str, bin_js: str) -> None:
         )
         last: dict = {"ok": False, "skipped": False, "ts": ts, "error": "no invocation succeeded"}
         for args in candidates:
-            try:
-                proc = subprocess.run(
-                    [node_exe, bin_js, *args],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=60, env=env,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                last = {"ok": False, "skipped": False, "ts": ts, "error": str(exc),
-                        "args": " ".join(args)}
-                continue
-            output = (proc.stderr or "") + (proc.stdout or "")
-            if proc.returncode == 0:
+            # The core spawns plugin CLIs of its own, so this must not use a
+            # pipe: on timeout the killed node would leave those children
+            # holding the read end and the caller would block forever.
+            code, output = run_capture(
+                [node_exe, bin_js, *args], env=env, timeout=60,
+            )
+            if code == 0:
                 last = {
                     "ok": True, "skipped": False, "exit": 0, "ts": ts,
                     "args": " ".join(args), "tail": output[-400:],
@@ -979,12 +1096,12 @@ def run_health_check(app_dir: str, cfg, node_exe: str, bin_js: str) -> None:
                 # This core does not implement the dump invocation: not a fault.
                 last = {
                     "ok": False, "skipped": True, "unsupported": True, "ts": ts,
-                    "exit": proc.returncode, "args": " ".join(args),
+                    "exit": code, "args": " ".join(args),
                     "tail": output[-400:],
                 }
                 continue
             last = {
-                "ok": False, "skipped": False, "exit": proc.returncode, "ts": ts,
+                "ok": False, "skipped": False, "exit": code, "ts": ts,
                 "args": " ".join(args), "tail": output[-400:],
             }
             break
