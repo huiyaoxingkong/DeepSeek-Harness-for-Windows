@@ -973,7 +973,7 @@ def test_script_encodings_match_their_interpreters() -> None:
               has_bom or not has_non_ascii,
               "BOM missing -> PowerShell 5.1 would read it as ANSI" if has_non_ascii else "")
 
-    for name in ("post-update.bat", "post-install.bat"):
+    for name in ("post-update.bat", "post-install.bat", "scripts/apply-patch.bat"):
         raw = open(os.path.join(REPO, name), "rb").read()
         check(f"{name} has no UTF-8 BOM (cmd reads ANSI)", not raw.startswith(b"\xef\xbb\xbf"))
         try:
@@ -1487,6 +1487,64 @@ def test_bundled_store_tarball_is_current() -> None:
           settings_range.count("||") >= 2, settings_range)
 
 
+@case
+def test_incremental_patch_is_safe_and_verified() -> None:
+    """The 1.0.5 incremental patch must not be able to hurt an instance.
+
+    Guards the mistakes this patch actually made while being built:
+    a name-only process match (it refused to patch because *another* instance
+    was running), an unquoted Start-Process argument list (breaks on the
+    default ``C:\\DeepSeek Harness`` path), a batch ``pnpm remove`` naming
+    packages that are not dependencies (pnpm fails as a whole), and the
+    reserved ``$home`` automatic variable.
+    """
+    apply_src = open(os.path.join(REPO, "scripts", "apply-patch.ps1"),
+                     "r", encoding="utf-8").read()
+    make_src = open(os.path.join(REPO, "scripts", "make-patch.ps1"),
+                    "r", encoding="utf-8").read()
+    test_src = open(os.path.join(REPO, "scripts", "test-patch.ps1"),
+                    "r", encoding="utf-8").read()
+
+    check("the patch script does not use the reserved $home variable",
+          "$home " not in apply_src and "$home)" not in apply_src
+          and "$home=" not in apply_src and "$dshHome" in apply_src)
+    check("the running-instance guard matches the install path, not the name",
+          "Get-InstanceExePids" in apply_src and "| Stop-Process" not in apply_src,
+          "a name-only match blocks/patches other instances")
+    check("only installed retired plugins are passed to the CLI",
+          "$present" in apply_src and '") + $present' in apply_src)
+    check("Start-Process arguments are quoted (paths with spaces)",
+          "$quoted" in apply_src and "$quoted -join ' '" in apply_src)
+    check("_internal is mirrored, not merged",
+          "/MIR" in apply_src and "robocopy" in apply_src)
+    check("the patch backs up before writing",
+          0 < apply_src.find("patch-backup-") < apply_src.find("3. 应用应用层文件"))
+    check("the patch supports -DryRun and -NoRestart",
+          "[switch]$DryRun" in apply_src and "[switch]$NoRestart" in apply_src)
+    check("the patch verifies payload hashes at the end",
+          "MANIFEST.sha256" in apply_src and "Test-Hash" in apply_src)
+
+    check("the patch builder refuses a corrupted post-update.bat",
+          "GetEncoding(936)" in make_src and "CRLF" in make_src
+          and "替换字符" in make_src)
+    check("the patch builder rejects a UTF-8 BOM in the batch file",
+          "0xEF" in make_src and "0xBB" in make_src)
+    check("the patch builder emits a manifest and a zip hash",
+          "MANIFEST.sha256" in make_src and "$zipPath.sha256" in make_src)
+    check("the acceptance test applies the patch to a copy only",
+          "-NoRestart" in test_src and "PATCH TEST: ALL PASS" in test_src
+          and "mklink /J" in test_src)
+
+    # the encoding normalizer is the guard for the whole class of bugs
+    script = os.path.join(REPO, "scripts", "fix-script-encodings.py")
+    check("the encoding normalizer ships with the repo", os.path.isfile(script))
+    proc = subprocess.run([sys.executable, script, "--check"],
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=120)
+    check("every shipped script is encoded for its interpreter",
+          proc.returncode == 0, (proc.stdout or "")[-300:])
+
+
 # ---------------------------------------------------------------------- main
 
 
@@ -1520,6 +1578,7 @@ def main() -> int:
         test_console_output_decoding_never_crashes,
         test_immersive_is_gated_on_the_workspace_page,
         test_script_encodings_match_their_interpreters,
+        test_incremental_patch_is_safe_and_verified,
         test_close_saves_state_and_stops_the_core,
         test_close_confirmation_ui_is_complete,
         test_shell_ui_has_no_duplicate_ids,

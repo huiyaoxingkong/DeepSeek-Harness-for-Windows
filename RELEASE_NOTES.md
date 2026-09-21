@@ -304,6 +304,7 @@ subprocess 的读取线程里，一旦遇到 GBK 字节就抛 `UnicodeDecodeErro
 | --- | --- |
 | 懒人包安装/升级 | `DeepSeekHarness-1.0.5-Setup.exe` / `-Update.exe`（内置 Node + Git，推荐） |
 | 极简包安装/升级 | `DeepSeekHarness-1.0.5-Minimal-Setup.exe` / `-Minimal-Update.exe`（无内置运行时） |
+| **增量补丁**（已装内核的实例） | `DeepSeekHarness-1.0.5-Patch.zip`（约 14.5 MB）：只更新应用层（exe / `_internal` / UI / `post-update.bat` / 随包商店包），不动 `core\`、`runtime\` 与 `data\`；不联网也能完成 profile 清单级清理；用法与回滚见 `docs/PATCH-1.0.5.md` |
 | 校验 | `SHA256SUMS-1.0.5.txt` / `SHA256SUMS-1.0.5-Minimal.txt` 与各包 `.sha256` 文件随 Release 发布 |
 | 安装方式 | 双击安装包，选择安装目录（默认 `C:\DeepSeek Harness`），自动创建桌面快捷方式 |
 | 升级方式 | 外壳「关于」页一键下载安装（懒人包），或从 Releases 下载对应 `-Update.exe` 放在**安装目录内**双击运行 |

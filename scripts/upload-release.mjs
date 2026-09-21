@@ -25,6 +25,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -138,11 +139,23 @@ async function api(token, method, url, body, extraHeaders = {}) {
   return null
 }
 
+function sha256(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+}
+
 async function uploadAsset(token, releaseId, file, existing) {
   const name = path.basename(file)
   const size = fs.statSync(file).size
   const previous = existing.find(a => a.name === name)
   if (previous) {
+    // GitHub reports `digest: sha256:…` for uploaded assets: re-uploading a
+    // 455 MB installer whose bytes did not change wastes bandwidth and time,
+    // so an unchanged asset is left in place.
+    const published = String(previous.digest || '').split(':').pop()
+    if (published && published === sha256(file)) {
+      log(`  ${name} unchanged, skipping (${(size / 1048576).toFixed(1)} MB)`)
+      return previous
+    }
     log(`  removing existing asset ${name}`)
     await api(token, 'DELETE', `/releases/assets/${previous.id}`)
   }
@@ -258,7 +271,9 @@ async function main() {
   log('=== 3. assets ===')
   const files = fs.existsSync(RELEASE_DIR)
     ? fs.readdirSync(RELEASE_DIR)
-        .filter(name => name.includes(version) && (name.endsWith('.exe') || name.endsWith('.sha256') || name.endsWith('.txt')))
+        .filter(name => name.includes(version)
+          && (name.endsWith('.exe') || name.endsWith('.sha256')
+              || name.endsWith('.txt') || name.endsWith('.zip')))
         .map(name => path.join(RELEASE_DIR, name))
         .sort()
     : []
@@ -269,7 +284,10 @@ async function main() {
   const existing = release ? await api(token, 'GET', `/releases/${release.id}/assets`) : []
   for (const file of files) {
     if (dryRun) {
-      log(`  [dry-run] would upload ${path.basename(file)}`)
+      const prev = existing.find(a => a.name === path.basename(file))
+      const pub = String(prev?.digest || '').split(':').pop()
+      const unchanged = Boolean(pub) && pub === sha256(file)
+      log(`  [dry-run] ${unchanged ? 'unchanged, would skip' : 'would upload'} ${path.basename(file)}`)
       continue
     }
     await uploadAsset(token, release.id, file, existing)

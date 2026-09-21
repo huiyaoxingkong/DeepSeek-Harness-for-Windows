@@ -20,6 +20,11 @@
 
 修复（均带回归测试）：
 
+> **已安装实例的增量补丁**：`DeepSeekHarness-1.0.5-Patch.zip`（约 14.5 MB）只更新应用层
+> （exe / `_internal` / UI / `post-update.bat` / 随包商店包），不动 `core\`、`runtime\` 与
+> `data\`，会顺带清理与新内核不兼容的旧 dsh-web 插件；用法与回滚见
+> [`docs/PATCH-1.0.5.md`](docs/PATCH-1.0.5.md)，验收脚本 `scripts\test-patch.ps1`。
+
 ### 一、1.0.3 起「看起来有、实际没生效」的功能
 
 - **外观（主题）系统彻底修好**：内置外观用的是相对路径（`themes/ocean.css`），而

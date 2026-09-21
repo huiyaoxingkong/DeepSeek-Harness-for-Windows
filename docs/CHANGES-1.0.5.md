@@ -84,6 +84,11 @@
 | `scripts/make-release.ps1`、`scripts/upload-release.ps1` | 默认版本 `1.0.5` |
 | `scripts/upload-release.mjs`（新增） | **Node 版上传脚本**：提交 + 打标签 + 推送、创建 Release、上传安装包与校验文件；凭据依次取 `--token` / `GITHUB_TOKEN` / `GH_TOKEN` / git 凭据助手；内置重试与 `--dry-run`。原因：本机仅 PowerShell 5.1（`upload-release.ps1` 要求 PS7），且 schannel 证书吊销检查不可用（`CRYPT_E_REVOCATION_OFFLINE`），Node 的 OpenSSL 正常 |
 | `.gitignore` | `tools/` 改为 `tools/*` + 放行测试脚本与 `tools/immersive-check/`、`tools/core-update-test/`（7-Zip 等二进制仍忽略） |
+| `scripts/make-patch.ps1`（新增） | 从 `dist\DeepSeek Harness` 组装**增量补丁**：`payload\{exe,_internal,ui,store\*,post-update.bat}` + `apply-patch.ps1` + 双击入口 + `MANIFEST.sha256` + `补丁说明.md`，压缩为 `release\DeepSeekHarness-<ver>-Patch.zip`（约 14.5 MB）；打包前校验 `post-update.bat` 严格 GBK + CRLF 且无替换字符 |
+| `scripts/apply-patch.ps1`、`scripts/apply-patch.bat`（新增） | 补丁应用器：**只认 `-InstallDir` 指定的实例**（按进程可执行文件路径匹配——不会因为别的实例在运行而拒绝，也绝不会关掉别的实例）；备份 → 镜像 `_internal` → 合并 UI → 替换 exe / `post-update.bat` → 写入新商店包并删旧包 → `dsh plugin remove`（只传清单里确实存在的名字；`Start-Process` 参数自行加引号，兼容含空格的默认安装路径 `C:\DeepSeek Harness`）→ profile 清单清理 → config 修正 → 逐文件哈希校验；支持 `-DryRun` / `-StopApp` / `-NoRestart` |
+| `scripts/test-patch.ps1`（新增） | 补丁验收：把补丁应用到一个**真实实例的副本**（离线场景 + core/runtime junction 的 CLI 场景），39 项断言全部通过 |
+| `scripts/fix-script-encodings.py`（新增） | 脚本编码归一化与检查（PS1 → UTF-8 BOM + CRLF；`.bat` → 控制台代码页 + CRLF），防止再次出现「UTF-8 写进 ANSI 批处理」导致的 cmd 行边界丢失 |
+| `docs/PATCH-1.0.5.md`（新增） | 增量补丁说明：用途、动作清单、使用/回滚、验收方法、已知边界 |
 
 ### 2.3 文档与发布说明
 
@@ -106,6 +111,7 @@
 | `tools/core-update-test/test_launch_ladder.py` | 真实 CLI 的启动参数降级与记忆验证 |
 | `tools/core-update-test/test_plugin_on_core.py` | 真实内核上的插件安装/列出/卸载验证 |
 | `tools/core-update-test/test_plugin_migration_on_core.py`（新增） | 在开发实例的真实内核上复现升级前状态（5 个旧包 + 旧商店）→ 商店源重指向 → 迁移（清单 + `node_modules`）→ 安装 `@linxin666/dsh-web-all@0.3.23` → 内核启动与 HTTP 校验 |
+| `scripts/test-patch.ps1`（新增） | 增量补丁验收（真实实例副本，39 项）：离线场景与 CLI 场景全部通过 |
 | `examples/shell-plugins/`（含 README） | 外壳插件示例与开发套件：仅作开发参考，**不随包分发** |
 
 ---
@@ -132,6 +138,7 @@
 | `tools/audit-backend.py` | **65/65 通过**（全部 Bridge 方法可用且返回结构正确） |
 | `tools/core-update-test/test_plugin_migration_on_core.py`（新增） | **32/32 通过**：真实 0.1.6 内核上复现旧插件 + 旧商店的升级前状态 → 商店源重指向 → 迁移（清单 + pnpm 对账 + 幂等）→ 安装 `@linxin666/dsh-web-all@0.3.23` → 迁移前后内核均 token 地址 HTTP 200 / 裸地址 401 |
 | 安装包冒烟 `smoke-release.ps1`（懒人包 / 极简包） | 真实解包 + 校验 + 升级 dry-run（`post-update.bat` 真实执行、UI 合并刷新、用户文件保留、核心 junction 恢复）**全部通过** |
+| 增量补丁 `scripts\test-patch.ps1` | **39/39 通过**（真实实例副本上离线应用 + 真实 `dsh plugin remove`），补丁包 `release\DeepSeekHarness-1.0.5-Patch.zip`（14.5 MB） |
 | `tools/immersive-check/`（Edge 153 无头，13 场景） | **16/16 通过**；修复前退出全屏 iframe=980×150，修复后 980×622；外观 `rgb(14,17,22)`→`rgb(244,246,250)`；导航「◇插件」→「◇Plugins」；取消更新可点击并调用 `cancel_update` |
 | 真机升级 `0.1.1-rc.2 → 0.1.6-alpha.2` | 通过（备份回收、健康检查 exit 0、HTTP 200） |
 | 真机降级 `0.1.6-alpha.2 → 0.1.1-rc.2` | 通过（裸地址 HTTP 200，旧内核无需 token） |
